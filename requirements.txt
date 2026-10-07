@@ -1,0 +1,8 @@
+faster-whisper
+fastapi
+uvicorn[standard]
+python-multipart
+anthropic
+pydantic
+python-dotenv
+pytest
