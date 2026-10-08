@@ -1,14 +1,15 @@
 """Face-tracking reframe for vertical (9:16) clips.
 
 For each rendered range we sample frames, detect faces with Apple's Vision framework, split
-the samples into shots at scene cuts, and plan a horizontal crop position per shot:
+the samples into shots at hard scene cuts, and frame each shot the way a camera operator would:
 
-- If every face in the shot fits in one crop window, the crop holds still (like a locked-off
-  camera). This is the common case and looks the most deliberate.
-- Otherwise a dead-zone follower pans smoothly toward the subject. It only moves once the face
-  drifts away from centre, so there's no jitter.
+- Hold still while the subject stays inside a safe zone. Most shots are a single hold.
+- When the subject really leaves that zone, make one deliberate move to a new hold, eased in and
+  out, slower for longer moves. The camera never hunts back and forth after small head motions.
+- Glitches (a missed detection, a stray face for one sample) are filtered out first, and a shot
+  with no visible face keeps the previous framing instead of snapping to the centre.
 
-Without Vision (non-Mac) or when no face is found, the crop falls back to the frame centre.
+Without Vision (non-Mac) or when no face is found at all, the crop falls back to the centre.
 """
 
 import shutil
@@ -22,8 +23,11 @@ ANALYSIS_WIDTH = 640
 # change (whip pans). Handheld shake moves pixels but barely changes the histogram (< 0.1).
 CUT_HIST = 0.3
 CUT_PIXEL, CUT_PIXEL_HIST = 60, 0.12
-DEAD_ZONE = 0.12  # fraction of crop width the subject may drift before the camera moves
-FOLLOW = 0.35  # fraction of the remaining distance covered per sample while panning
+HOLD_RANGE = 0.45  # how far (fraction of crop width) the subject may wander before reframing
+MEDIAN = 5  # samples in the glitch filter (~0.8 s)
+MOVE_MIN, MOVE_PER_CROP, MOVE_MAX = 0.6, 1.2, 2.0  # seconds per reframing move, by distance
+OUTPUT_FPS = 30  # keyframe rate during a move
+MIN_HOLD = 6  # samples (1 s); shorter holds in the middle of a shot become part of a move
 
 
 @dataclass
@@ -97,45 +101,96 @@ def _hist(thumb: bytes, bins: int = 16) -> list[float]:
     return [x / max(1, len(thumb)) for x in h]
 
 
-def split_shots(thumbs: list[bytes]) -> list[int]:
-    """Indices where a new shot starts, from raw grayscale thumbnails of equal size."""
+def split_shots(thumbs: list[bytes], strong_only: bool = False) -> list[int]:
+    """Indices where a new shot starts, from raw grayscale thumbnails of equal size.
+
+    strong_only ignores whip pans and fast handheld motion, which the reframer should ride
+    through rather than treat as a new shot."""
     starts = [0]
     for i in range(1, len(thumbs)):
         a, b = thumbs[i - 1], thumbs[i]
         pixel = sum(abs(x - y) for x, y in zip(a, b)) / max(1, len(a))
         hist = sum(abs(x - y) for x, y in zip(_hist(a), _hist(b))) / 2
-        if hist > CUT_HIST or (pixel > CUT_PIXEL and hist > CUT_PIXEL_HIST):
+        if hist > CUT_HIST or (not strong_only and pixel > CUT_PIXEL and hist > CUT_PIXEL_HIST):
             starts.append(i)
     return starts
 
 
-def plan_shot(targets: list[float | None], crop_w: float) -> list[float]:
-    """Crop centre (0..1) for each sample in one shot."""
+def _median_filter(xs: list[float], k: int = MEDIAN) -> list[float]:
+    h = k // 2
+    return [sorted(xs[max(0, i - h) : i + h + 1])[len(xs[max(0, i - h) : i + h + 1]) // 2] for i in range(len(xs))]
+
+
+def holds(targets: list[float | None], crop_w: float, start_x: float | None = None) -> list[tuple[int, int, float]]:
+    """Split one shot into holds [(first_sample, end_sample, crop_centre)].
+
+    A hold lasts as long as every subject position in it fits within HOLD_RANGE of the crop.
+    With no face in the shot, it holds start_x (the previous shot's framing) or the centre.
+    """
+    n = len(targets)
     known = [t for t in targets if t is not None]
     if not known:
-        return [0.5] * len(targets)
-    # Fill gaps (missed detections) from the nearest earlier sample, else the first known one.
+        return [(0, n, 0.5 if start_x is None else start_x)]
     filled, last = [], known[0]
-    for t in targets:
+    for t in targets:  # missed detections hold the last seen position
         last = t if t is not None else last
         filled.append(last)
-    lo, hi = min(filled), max(filled)
-    if hi - lo <= crop_w * 0.5:
-        return [(lo + hi) / 2] * len(filled)  # locked-off shot
-    pos, path = filled[0], []
-    for t in filled:
-        if abs(t - pos) > crop_w * DEAD_ZONE:
-            pos += (t - pos) * FOLLOW
-        path.append(pos)
-    return path
+    filled = _median_filter(filled)
+    out, a, lo, hi = [], 0, filled[0], filled[0]
+    for i in range(1, n):
+        nlo, nhi = min(lo, filled[i]), max(hi, filled[i])
+        if nhi - nlo > crop_w * HOLD_RANGE:
+            out.append((a, i, (lo + hi) / 2))
+            a, lo, hi = i, filled[i], filled[i]
+        else:
+            lo, hi = nlo, nhi
+    out.append((a, n, (lo + hi) / 2))
+    return out
 
 
-def plan(targets: list[float | None], shot_starts: list[int], crop_w: float) -> list[float]:
+def _ease(u: float) -> float:
+    return u * u * (3 - 2 * u)  # smoothstep: starts and stops gently
+
+
+def _long_holds(hs: list[tuple[int, int, float]]) -> list[tuple[int, int, float]]:
+    """Drop brief holds between longer ones: when the subject sweeps across the frame (a fast
+    camera swing), that's one move, not a chain of small ones at uneven speeds."""
+    if len(hs) <= 2:
+        return hs
+    return [hs[0], *[h for h in hs[1:-1] if h[1] - h[0] >= MIN_HOLD], hs[-1]]
+
+
+def camera_path(targets: list[float | None], shot_starts: list[int], crop_w: float) -> list[tuple[float, float]]:
+    """Crop centre over time [(seconds, x 0..1)]: holds joined by eased moves; cuts jump."""
     bounds = [*shot_starts, len(targets)]
-    path: list[float] = []
+    keys: list[tuple[float, float]] = []
+    prev_x = None
     for a, b in zip(bounds, bounds[1:]):
-        path.extend(plan_shot(targets[a:b], crop_w))
-    return path
+        hs = _long_holds(holds(targets[a:b], crop_w, prev_x))
+        keys.append((a / SAMPLE_FPS, hs[0][2]))  # a cut (or the start) jumps straight to the framing
+        for (h0a, h0b, x0), (h1a, h1b, x1) in zip(hs, hs[1:]):
+            # The move spans any dropped brief holds between the two, at least long enough
+            # for its distance, and never eats more than half of either neighbouring hold.
+            gap = (h1a - h0b) / SAMPLE_FPS
+            dur = max(gap, min(MOVE_MAX, max(MOVE_MIN, MOVE_PER_CROP * abs(x1 - x0) / crop_w)))
+            dur = min(dur, gap + ((h0b - h0a) + (h1b - h1a)) / 2 / SAMPLE_FPS)
+            t_mid = (a + (h0b + h1a) / 2) / SAMPLE_FPS
+            t0 = max(t_mid - dur / 2, keys[-1][0])
+            steps = max(1, round(dur * OUTPUT_FPS))
+            for j in range(steps + 1):
+                keys.append((t0 + dur * j / steps, x0 + (x1 - x0) * _ease(j / steps)))
+        prev_x = hs[-1][2]
+    return keys
+
+
+def keyframes(path: list[tuple[float, float]], width: int, crop_px: int) -> list[tuple[float, int]]:
+    """Camera path -> ffmpeg crop keyframes in source pixels, emitting only changes."""
+    out: list[tuple[float, int]] = []
+    for t, cx in path:
+        x = int(min(max(cx * width - crop_px / 2, 0), width - crop_px)) // 2 * 2
+        if not out or out[-1][1] != x:
+            out.append((round(t, 3), x))
+    return out or [(0.0, (width - crop_px) // 4 * 2)]
 
 
 THUMB = (32, 18)
@@ -175,24 +230,6 @@ def scene_cuts(source: Path, start: float, dur: float) -> list[float]:
     return [round(start + i / SAMPLE_FPS, 3) for i in split_shots(thumbs)[1:]]
 
 
-def keyframes(path: list[float], shot_starts: list[int], width: int, crop_px: int, steps: int = 4) -> list[tuple[float, int]]:
-    """Turn per-sample crop centres into ffmpeg keyframes. Pans are interpolated `steps` times
-    per sample so motion is smooth; cuts between shots jump instantly."""
-    def left(cx: float) -> int:
-        return int(min(max(cx * width - crop_px / 2, 0), width - crop_px)) // 2 * 2
-
-    cuts = set(shot_starts)
-    keys: list[tuple[float, int]] = []
-    for i, cx in enumerate(path):
-        t = i / SAMPLE_FPS
-        nxt = path[i + 1] if i + 1 < len(path) and (i + 1) not in cuts else None
-        for j in range(steps if nxt is not None else 1):
-            x = left(cx + (nxt - cx) * j / steps) if nxt is not None else left(cx)
-            if not keys or keys[-1][1] != x:  # only emit changes; a locked-off shot is one keyframe
-                keys.append((t + j / (SAMPLE_FPS * steps), x))
-    return keys or [(0.0, left(0.5))]
-
-
 def crop_width(width: int, height: int) -> int:
     return min(width, round(height * 9 / 16 / 2) * 2)
 
@@ -216,8 +253,7 @@ def track(source: Path, width: int, height: int, start: float, dur: float) -> li
         targets = [subject_x(detect_faces(f.read_bytes()), crop_w) for f in frames]
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    shots = split_shots(thumbs)
-    return keyframes(plan(targets, shots, crop_w), shots, width, crop_px)
+    return keyframes(camera_path(targets, split_shots(thumbs, strong_only=True), crop_w), width, crop_px)
 
 
 def crop_filter(keys: list[tuple[float, int]], width: int, height: int, tmp: Path) -> str:
