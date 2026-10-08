@@ -141,24 +141,38 @@ def plan(targets: list[float | None], shot_starts: list[int], crop_w: float) -> 
 THUMB = (32, 18)
 
 
-def _sample(source: Path, start: float, dur: float, tmp: Path) -> tuple[list[Path], list[bytes]]:
-    """JPEG frames for face detection plus tiny grayscale thumbnails for cut detection, in one pass."""
+def _sample(source: Path, start: float, dur: float, tmp: Path, jpegs: bool = True) -> tuple[list[Path], list[bytes]]:
+    """JPEG frames for face detection (optional) plus tiny grayscale thumbnails for cut
+    detection, in one decoding pass."""
     from .ingest import hw_decode, run
 
     tw, th = THUMB
+    if jpegs:
+        graph = f"[0:v]fps={SAMPLE_FPS},split[a][b];[a]scale={ANALYSIS_WIDTH}:-2[jpg];[b]scale={tw}:{th},format=gray[raw]"
+        outputs = ["-map", "[jpg]", "-q:v", "4", str(tmp / "f%05d.jpg"), "-map", "[raw]"]
+    else:
+        graph = f"[0:v]fps={SAMPLE_FPS},scale={tw}:{th},format=gray[raw]"
+        outputs = ["-map", "[raw]"]
     run([
-        # -t before -i limits the input, so both outputs stop at the range end.
+        # -t before -i limits the input, so every output stops at the range end.
         "ffmpeg", "-y", *hw_decode(), "-ss", f"{start:.6f}", "-t", f"{dur:.6f}", "-i", str(source),
-        "-filter_complex",
-        f"[0:v]fps={SAMPLE_FPS},split[a][b];[a]scale={ANALYSIS_WIDTH}:-2[jpg];[b]scale={tw}:{th},format=gray[raw]",
-        "-map", "[jpg]", "-q:v", "4", str(tmp / "f%05d.jpg"),
-        "-map", "[raw]", "-f", "rawvideo", str(tmp / "thumbs.raw"),
+        "-filter_complex", graph, *outputs, "-f", "rawvideo", str(tmp / "thumbs.raw"),
     ])
     frames = sorted(tmp.glob("f*.jpg"))
     raw = (tmp / "thumbs.raw").read_bytes()
     n = tw * th
     thumbs = [raw[i : i + n] for i in range(0, len(raw) - n + 1, n)]
-    return frames, thumbs[: len(frames)]
+    return frames, thumbs[: len(frames)] if jpegs else thumbs
+
+
+def scene_cuts(source: Path, start: float, dur: float) -> list[float]:
+    """Times (seconds, source timeline) of scene cuts within a range."""
+    tmp = Path(tempfile.mkdtemp(prefix="autoedit-cuts-"))
+    try:
+        _, thumbs = _sample(source, start, dur, tmp, jpegs=False)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return [round(start + i / SAMPLE_FPS, 3) for i in split_shots(thumbs)[1:]]
 
 
 def keyframes(path: list[float], shot_starts: list[int], width: int, crop_px: int, steps: int = 4) -> list[tuple[float, int]]:

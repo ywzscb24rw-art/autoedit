@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { api, fmt, type Mode, type State } from './api'
+import { api, CONTENT_LABELS, fmt, type Content, type Mode, type State } from './api'
 import { Recorder } from './recorder'
 
 export default function HomePage() {
   const [mode, setMode] = useState<Mode>('clean')
+  const [content, setContent] = useState<Content>('screen')
   const [mic, setMic] = useState(true)
   const [systemAudio, setSystemAudio] = useState(false)
   const [vertical, setVertical] = useState(true)
@@ -31,7 +32,7 @@ export default function HomePage() {
       const st = await api.upload(file, name)
       // A re-upload of a file we already have returns that project. If it's still processing,
       // just open it; otherwise run the chosen mode (conversion and transcript are reused).
-      if (st.status !== 'running') await api.process(st.id, { mode, use_ai: mode === 'clips' || useAi, vertical })
+      if (st.status !== 'running') await api.process(st.id, { mode, content, use_ai: mode === 'clips' || useAi, vertical })
       location.hash = `#/p/${st.id}`
     } catch (e) {
       setError(String(e))
@@ -80,6 +81,12 @@ export default function HomePage() {
         </div>
 
         <div className="toggles">
+          <label>
+            Video type{' '}
+            <select value={content} onChange={(e) => setContent(e.target.value as Content)} disabled={recording}>
+              {Object.entries(CONTENT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          </label>
           <label><input type="checkbox" checked={mic} onChange={(e) => setMic(e.target.checked)} disabled={recording} /> Microphone</label>
           <label><input type="checkbox" checked={systemAudio} onChange={(e) => setSystemAudio(e.target.checked)} disabled={recording} /> Tab / system audio</label>
           {mode === 'clean' && (

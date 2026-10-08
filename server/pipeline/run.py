@@ -2,11 +2,16 @@
 
 import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 
 from ..project import Project
-from . import clean, edl, narrate, render
+from . import broll, clean, edl, narrate, reframe, render
 from .ingest import convert_video, extract_audio, probe
 from .transcribe import backend, transcribe
+
+
+# Default clip length (seconds) per content type. Vlog moments are short and punchy.
+CLIP_LENGTHS = {"screen": (30, 90), "talking": (30, 90), "vlog": (15, 60)}
 
 
 def _stage(p: Project, stage: str, progress: float | None) -> None:
@@ -82,20 +87,56 @@ def edit(p: Project, transcript: dict, mode: str, use_ai: bool, opts: dict) -> d
     }
     if use_ai:
         if mode == "clips":
+            content = opts.get("content", "screen")
+            lo, hi = CLIP_LENGTHS.get(content, CLIP_LENGTHS["screen"])
             edits.update(narrate.find_clips(
-                transcript, auto,
-                min_s=opts.get("min_s", 30), max_s=opts.get("max_s", 90), max_clips=opts.get("max_clips", 5),
+                transcript, auto, content=content,
+                min_s=opts.get("min_s") or lo, max_s=opts.get("max_s") or hi, max_clips=opts.get("max_clips", 5),
             ))
         else:
-            edits.update(narrate.clean_edit(transcript, auto))
+            edits.update(narrate.clean_edit(transcript, auto, content=opts.get("content", "screen")))
     elif mode == "clips":
         raise RuntimeError("Clips mode needs the AI edit (it chooses what to clip).")
     p.write("edits.json", edits)
     return edits
 
 
+def scene_cuts_for(p: Project, transcript: dict, edits: dict) -> list[float]:
+    """Scene cuts inside the stretches of footage that B-roll may keep (cached per stretch)."""
+    wins = edl.windows(transcript, edits)
+    if not wins:
+        return []
+    cache = p.read("cuts.json", {})
+    todo = [w for w in wins if f"{w[0]:.3f}-{w[1]:.3f}" not in cache]
+    if todo:
+        _stage(p, "scenes", None)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            found = list(pool.map(lambda w: reframe.scene_cuts(p.source, w[0], w[1] - w[0]), todo))
+        for w, cuts in zip(todo, found):
+            cache[f"{w[0]:.3f}-{w[1]:.3f}"] = cuts
+        p.write("cuts.json", cache)
+    return sorted({c for w in wins for c in cache[f"{w[0]:.3f}-{w[1]:.3f}"]})
+
+
+def broll_filter(p: Project, transcript: dict, edits: dict, cuts: list[float]):
+    """For vlogs with the AI edit on, Claude looks at each proposed B-roll shot and keeps or
+    skips it. Returns allow(start, end) for the EDL, or None to keep every proposed shot."""
+    if not edits.get("use_ai") or not edl.params_for(edits).broll_gap:
+        return None
+    pieces = edl.broll_pieces(transcript, edits, cuts)
+    if not pieces:
+        return None
+    cache = p.read("broll.json", {})
+    if any(broll.key(pc) not in cache for pc in pieces):
+        _stage(p, "broll", None)
+        cache = broll.review(p.source, transcript, edits, pieces, cache)
+        p.write("broll.json", cache)
+    return lambda s, e: cache.get(f"{s:.3f}-{e:.3f}", {}).get("keep", True)
+
+
 def render_outputs(p: Project, transcript: dict, edits: dict) -> list[dict]:
-    plan = edl.compute(transcript, edits)
+    cuts = scene_cuts_for(p, transcript, edits)
+    plan = edl.compute(transcript, edits, cuts=cuts, allow=broll_filter(p, transcript, edits, cuts))
     p.write("edl.json", plan)
     vertical = bool(edits.get("opts", {}).get("vertical"))
     # Only replace this mode's outputs, so a clean edit and its clips can coexist.

@@ -1,4 +1,8 @@
 export type Mode = 'clean' | 'clips'
+export type Content = 'screen' | 'talking' | 'vlog'
+export const CONTENT_LABELS: Record<Content, string> = {
+  screen: 'Screen recording', talking: 'Talking head', vlog: 'Vlog (keeps B-roll)',
+}
 
 export interface Word { i: number; w: string; start: number; end: number; prob: number; seg: number }
 export interface Segment { id: number; start: number; end: number; words: [number, number]; text: string }
@@ -27,7 +31,8 @@ export interface ProjectData {
   cut: Record<string, string>; has_source: boolean
 }
 export interface ProcessOpts {
-  mode: Mode; use_ai: boolean; vertical?: boolean; min_s?: number; max_s?: number; max_clips?: number
+  mode: Mode; use_ai: boolean; vertical?: boolean; content?: Content
+  min_s?: number | null; max_s?: number | null; max_clips?: number
 }
 
 async function json<T>(res: Response): Promise<T> {

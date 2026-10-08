@@ -11,7 +11,7 @@ import anthropic
 
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5-5")
 
-CLEAN_SYSTEM = """You are an expert video editor working from a timestamped transcript of a screen recording, such as a tutorial, course lesson, or walkthrough. Filler words ("um", "uh") and long pauses have already been removed automatically. Your job is the editorial pass: decide which sentences stay so that the final video is a tight, coherent lesson.
+CLEAN_SYSTEM = """You are an expert video editor working from a timestamped transcript of a recording. The first line of the user message describes what kind of video it is. Filler words ("um", "uh") have already been removed automatically. Your job is the editorial pass: decide which sentences stay so that the final video is tight and coherent.
 
 Each line looks like `[id] mm:ss.s (duration) text`.
 
@@ -23,7 +23,7 @@ Cut:
 
 Keep everything that carries content. The creator wants their material intact, just tighter. When unsure, keep.
 
-Order: return the kept ids in playback order. Stay chronological unless moving a sentence clearly repairs the narrative (for example, "oh, I should have mentioned earlier..."). The picture is a screen recording, so reordering causes visual jumps. Do it rarely.
+Order: return the kept ids in playback order. Stay chronological unless moving a sentence clearly repairs the narrative (for example, "oh, I should have mentioned earlier..."). Reordering causes visual jumps, so do it rarely.
 
 Give a short reason for each group of cut sentences, and a one-paragraph summary of the edit."""
 
@@ -39,6 +39,21 @@ Each clip must:
 - Run within the target duration. Sum the durations of the sentences you pick.
 
 Prefer contiguous runs of sentences. Rank clips best first, and score each 1-10 for how likely it is to perform. Return fewer clips rather than weak ones."""
+
+
+CONTENT = {
+    "screen": "Screen recording: a tutorial, course lesson, or walkthrough. The picture is a screen capture.",
+    "talking": "Talking-head video: one speaker on camera, addressing the viewer.",
+    "vlog": (
+        "Vlog: casual footage across many scenes, often several people talking over each other, with "
+        "music and background chatter. Footage between lines (reactions, scenery, B-roll) is kept "
+        "automatically, so judge the lines and the story they tell."
+    ),
+}
+
+
+def _content_line(content: str) -> str:
+    return f"Video type: {CONTENT.get(content, CONTENT['screen'])}\n\n"
 
 
 def _fmt_time(t: float) -> str:
@@ -104,7 +119,8 @@ CLIPS_SCHEMA = {
 }
 
 
-def _call(system: str, user: str, schema: dict) -> dict:
+def _call(system: str, user: str | list[dict], schema: dict, effort: str = "high") -> dict:
+    """One structured-output request. `user` may be a list of content blocks (text and images)."""
     if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
         raise RuntimeError("No Claude credentials: add ANTHROPIC_API_KEY to .env, or turn off the AI edit.")
     client = anthropic.Anthropic()
@@ -113,7 +129,7 @@ def _call(system: str, user: str, schema: dict) -> dict:
         max_tokens=32000,
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",
-        output_config={"effort": "high", "format": {"type": "json_schema", "schema": schema}},
+        output_config={"effort": effort, "format": {"type": "json_schema", "schema": schema}},
         system=system,
         messages=[{"role": "user", "content": user}],
     ) as stream:
@@ -135,10 +151,10 @@ def _valid_ids(ids, n: int) -> list[int]:
     return out
 
 
-def clean_edit(transcript: dict, auto_cuts: dict[str, str]) -> dict:
+def clean_edit(transcript: dict, auto_cuts: dict[str, str], content: str = "screen") -> dict:
     segs = transcript["segments"]
     n = len(segs)
-    result = _call(CLEAN_SYSTEM, transcript_for_llm(transcript, auto_cuts), CLEAN_SCHEMA)
+    result = _call(CLEAN_SYSTEM, _content_line(content) + transcript_for_llm(transcript, auto_cuts), CLEAN_SCHEMA)
 
     keep = _valid_ids(result["keep"], n)
     if n and len(keep) < 0.2 * n:
@@ -160,10 +176,12 @@ def clean_edit(transcript: dict, auto_cuts: dict[str, str]) -> dict:
     return {"order": order, "segment_cuts": segment_cuts, "summary": result["summary"], "clips": []}
 
 
-def find_clips(transcript: dict, auto_cuts: dict[str, str], min_s: float = 30, max_s: float = 90, max_clips: int = 5) -> dict:
+def find_clips(transcript: dict, auto_cuts: dict[str, str], min_s: float = 30, max_s: float = 90, max_clips: int = 5,
+               content: str = "screen") -> dict:
     segs = transcript["segments"]
     user = (
-        f"Target clip length: {min_s:.0f}-{max_s:.0f} seconds. Return at most {max_clips} clips.\n\n"
+        _content_line(content)
+        + f"Target clip length: {min_s:.0f}-{max_s:.0f} seconds. Return at most {max_clips} clips.\n\n"
         + transcript_for_llm(transcript, auto_cuts)
     )
     result = _call(CLIPS_SYSTEM, user, CLIPS_SCHEMA)

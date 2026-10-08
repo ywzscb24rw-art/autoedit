@@ -35,6 +35,7 @@ h3 { margin: 0 0 6px; font-size: 14px; }
 .brand { font-weight: 700; font-size: 18px; text-decoration: none; color: var(--text); }
 .tagline { color: var(--muted); font-size: 13px; }
 
+select { font: inherit; font-size: 14px; padding: 7px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
 button, .button {
   font: inherit; font-size: 14px; padding: 8px 14px; border-radius: 8px; cursor: pointer;
   border: 1px solid var(--line); background: var(--panel); color: var(--text);

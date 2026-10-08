@@ -82,8 +82,9 @@ class ProcessReq(BaseModel):
     mode: Literal["clean", "clips"] = "clean"
     use_ai: bool = True
     vertical: bool = False
-    min_s: float = 30
-    max_s: float = 90
+    content: Literal["screen", "talking", "vlog"] = "screen"
+    min_s: float | None = None  # None: the content type's default clip length
+    max_s: float | None = None
     max_clips: int = 5
 
 

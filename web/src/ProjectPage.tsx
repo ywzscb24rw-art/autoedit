@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, fmt, media, type ProjectData } from './api'
+import { api, CONTENT_LABELS, fmt, media, type Content, type ProjectData } from './api'
 
 const STAGES: Record<string, string> = {
   queued: 'Queued', ingest: 'Preparing video', transcribe: 'Transcribing',
-  clean: 'Finding fillers and silence', 'ai-edit': 'Claude is editing', render: 'Rendering preview', export: 'Exporting full resolution',
+  clean: 'Finding fillers and silence', 'ai-edit': 'Claude is editing', scenes: 'Finding scene cuts for B-roll', broll: 'Claude is reviewing B-roll', render: 'Rendering preview', export: 'Exporting full resolution',
 }
 const MAX_GAP = 0.6 // must match EdlParams.max_gap
 
@@ -50,9 +50,11 @@ export default function ProjectPage({ id }: { id: string }) {
     setDirty(true)
   }
 
-  async function rerun() {
+  async function rerun(content?: Content) {
     if (!edits) return
-    await api.process(id, { ...edits.opts, mode: edits.mode, use_ai: edits.use_ai })
+    // Switching the video type resets clip lengths to that type's defaults.
+    const lengths = content && content !== edits.opts.content ? { min_s: null, max_s: null } : {}
+    await api.process(id, { ...edits.opts, ...lengths, content: content ?? edits.opts.content, mode: edits.mode, use_ai: edits.use_ai })
     load()
   }
   async function render() { await api.render(id); load() }
@@ -77,7 +79,13 @@ export default function ProjectPage({ id }: { id: string }) {
       <div className="head">
         <h2>{state.name}</h2>
         <div className="actions">
-          {edits && <button onClick={rerun} disabled={running}>{edits.use_ai ? 'Re-run AI edit' : 'Re-run cleanup'}</button>}
+          {edits && (
+            <select value={edits.opts.content ?? 'screen'} disabled={running} title="Video type"
+              onChange={(e) => rerun(e.target.value as Content)}>
+              {Object.entries(CONTENT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          )}
+          {edits && <button onClick={() => rerun()} disabled={running}>{edits.use_ai ? 'Re-run AI edit' : 'Re-run cleanup'}</button>}
           {edits && <button className={dirty ? 'primary' : ''} onClick={render} disabled={running}>Render{dirty ? ' changes' : ''}</button>}
         </div>
       </div>
