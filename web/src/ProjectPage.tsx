@@ -3,7 +3,7 @@ import { api, fmt, media, type ProjectData } from './api'
 
 const STAGES: Record<string, string> = {
   queued: 'Queued', ingest: 'Preparing video', transcribe: 'Transcribing',
-  clean: 'Finding fillers and silence', 'ai-edit': 'Claude is editing', render: 'Rendering',
+  clean: 'Finding fillers and silence', 'ai-edit': 'Claude is editing', render: 'Rendering preview', export: 'Exporting full resolution',
 }
 const MAX_GAP = 0.6 // must match EdlParams.max_gap
 
@@ -56,6 +56,7 @@ export default function ProjectPage({ id }: { id: string }) {
     load()
   }
   async function render() { await api.render(id); load() }
+  async function exportFull(name: string) { await api.export(id, name); load() }
 
   function seek(t: number) {
     setView('source')
@@ -66,6 +67,10 @@ export default function ProjectPage({ id }: { id: string }) {
 
   const src = current ? media(id, current.file, renderedAt) : data.has_source ? media(id, 'source.mp4') : null
   const original = state.media?.duration
+  // Previews of footage taller than 1080p render at 1080p; full resolution is an explicit export.
+  const fullHeight = state.media?.height ?? 0
+  const canExport = !!current && fullHeight > 1080 && !(clip && edits?.opts.vertical)
+  const fullLabel = fullHeight >= 2160 ? '4K' : `${fullHeight}p`
 
   return (
     <main className="project">
@@ -77,12 +82,7 @@ export default function ProjectPage({ id }: { id: string }) {
         </div>
       </div>
 
-      {running && (
-        <div className="progress">
-          <div className="bar" style={{ width: `${Math.round(state.progress * 100)}%` }} />
-          <span>{STAGES[state.stage ?? ''] ?? state.stage}… {Math.round(state.progress * 100)}%</span>
-        </div>
-      )}
+      {running && <Progress state={state} />}
       {state.status === 'error' && <p className="error">{state.error}</p>}
 
       <div className="layout">
@@ -100,7 +100,10 @@ export default function ProjectPage({ id }: { id: string }) {
             <p className="muted stats">
               {fmt(original)} → <strong>{fmt(current.duration)}</strong>
               {current.name === 'main' && <> ({Math.round((1 - current.duration / original) * 100)}% shorter, {current.cuts} pieces)</>}
-              {' · '}<a href={media(id, current.file, renderedAt)} download>Download</a>
+              {' · '}<a href={media(id, current.file, renderedAt)} download>Download{canExport ? ' 1080p preview' : ''}</a>
+              {canExport && (current.export_file
+                ? <>{' · '}<a href={media(id, current.export_file, renderedAt)} download>Download {fullLabel}</a></>
+                : <>{' · '}<button className="link" onClick={() => exportFull(current.name)} disabled={running}>Export {fullLabel}</button></>)}
             </p>
           )}
 
@@ -167,4 +170,19 @@ function groupReasons(cuts: Record<string, string>) {
   const out: Record<string, string[]> = {}
   for (const [id, r] of Object.entries(cuts)) (out[r] ??= []).push(id)
   return out
+}
+
+function Progress({ state }: { state: ProjectData['state'] }) {
+  const label = STAGES[state.stage ?? ''] ?? state.stage
+  const video = state.video_progress
+  // While transcribing, the video converts in parallel; show both.
+  const side = state.stage === 'transcribe' && video !== undefined && video < 1
+    ? ` · converting video ${Math.round(video * 100)}%` : ''
+  const pct = state.stage === 'ingest' && state.progress === null && video !== undefined ? video : state.progress
+  return (
+    <div className={`progress ${pct === null ? 'indeterminate' : ''}`}>
+      <div className="bar" style={{ width: pct === null ? '100%' : `${Math.round(pct * 100)}%` }} />
+      <span>{label}…{pct !== null && ` ${Math.round(pct * 100)}%`}{side}</span>
+    </div>
+  )
 }

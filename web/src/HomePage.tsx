@@ -25,10 +25,13 @@ export default function HomePage() {
   }, [recording])
 
   async function submit(file: Blob, name: string) {
+    if (busy) return
     setBusy('Uploading…')
     try {
       const st = await api.upload(file, name)
-      await api.process(st.id, { mode, use_ai: mode === 'clips' || useAi, vertical })
+      // A re-upload of a file we already have returns that project. If it's still processing,
+      // just open it; otherwise run the chosen mode (conversion and transcript are reused).
+      if (st.status !== 'running') await api.process(st.id, { mode, use_ai: mode === 'clips' || useAi, vertical })
       location.hash = `#/p/${st.id}`
     } catch (e) {
       setError(String(e))

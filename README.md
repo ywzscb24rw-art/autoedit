@@ -36,17 +36,21 @@ Each stage writes a file to `data/projects/<id>/`, so a later stage can be re-ru
 | Stage | Code | Output |
 |---|---|---|
 | Record | `web/src/recorder.ts` | `raw.webm` (screen + mic mixed) |
-| Ingest | `server/pipeline/ingest.py` | `source.mp4` (30 fps CFR), `audio.wav` (16 kHz) |
+| Ingest | `server/pipeline/ingest.py` | `audio.wav` (16 kHz, extracted first) and `source.mp4` (re-wrapped if already H.264, otherwise hardware-transcoded to a constant frame rate) |
 | Transcribe | `server/pipeline/transcribe.py` | `transcript.json`: word timestamps, sentence segments |
 | Clean | `server/pipeline/clean.py` | filler / stutter cuts (rule-based) |
 | AI edit | `server/pipeline/narrate.py` | Claude's keep/cut/order decisions or clip picks → `edits.json` |
 | EDL | `server/pipeline/edl.py` | time ranges → `edl.json` |
-| Render | `server/pipeline/render.py` | `outputs/*.mp4` |
+| Reframe | `server/pipeline/reframe.py` | face-tracking 9:16 crop path for vertical clips |
+| Render | `server/pipeline/render.py` | `outputs/*.mp4` (1080p preview; full-resolution export on demand) |
 
 Notes:
 - Whisper normally drops "um" and "uh". It's primed with a disfluent `initial_prompt` so it transcribes them, which lets us cut them.
 - Pauses longer than 0.6 s are compressed. Each kept range is padded so word edges aren't clipped, and padding never extends into a neighbouring cut word.
+- Audio is extracted first, so transcription runs while the video converts. Video uses the Mac's VideoToolbox hardware encoder.
+- Uploading the same file again reuses the existing project instead of processing a second copy.
 - Rendering encodes every range as a separate frame-aligned piece and then concatenates them losslessly. This keeps audio and video in sync over hundreds of cuts, and 10 ms fades remove clicks at the cuts.
+- Vertical clips follow faces (Apple Vision, on-device). The crop locks still when the subject stays put, pans smoothly when they move, resets at scene cuts, and uses a person detector when faces are turned away. Without Vision it falls back to a centre crop.
 - Clicking a word in the UI stores an override in `edits.json`. Overrides survive a re-run of the AI edit.
 
 ## Tests
@@ -57,6 +61,7 @@ Notes:
 
 ## Config
 
-- `WHISPER_MODEL`: `small.en` by default. Use `medium.en` for better accuracy or `large-v3` for other languages.
+- `WHISPER_MODEL`: `large-v3-turbo` by default. `small.en` is faster on machines without a GPU.
+- `WHISPER_BACKEND`: `auto` uses MLX on the Apple Silicon GPU and faster-whisper on the CPU elsewhere.
 - `CLAUDE_MODEL`: `claude-opus-5-5` by default. `claude-sonnet-5-5` costs half as much and is usually fine for clean edits.
 - `AUTOEDIT_DATA`: where projects are stored (default `data/projects`).

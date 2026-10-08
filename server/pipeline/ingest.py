@@ -1,16 +1,69 @@
-"""Normalize any recording into a constant-frame-rate MP4 plus a 16 kHz mono WAV for Whisper."""
+"""Prepare a recording for editing: a 16 kHz mono WAV for Whisper, and a constant-frame-rate
+H.264 MP4 that the browser can play and ffmpeg can cut precisely.
 
+Camera and phone MP4s that are already H.264 with a constant frame rate are only re-wrapped,
+which takes under a second and keeps them at full resolution. Everything else (browser webm
+recordings, HEVC, variable frame rates) is transcoded on the Mac's hardware encoder.
+"""
+
+import functools
 import json
 import subprocess
+from fractions import Fraction
 from pathlib import Path
+from typing import Callable
 
-FPS = 30
+MAX_WIDTH = 3840
+COMMON_FPS = [Fraction(24000, 1001), Fraction(24), Fraction(25), Fraction(30000, 1001), Fraction(30),
+              Fraction(50), Fraction(60000, 1001), Fraction(60)]
 
 
-def run(cmd: list[str]) -> None:
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+def run(cmd: list[str], duration: float = 0, on_progress: Callable[[float], None] | None = None) -> None:
+    """Run ffmpeg. If on_progress is given, report the fraction of `duration` processed."""
+    if on_progress and duration:
+        cmd = [cmd[0], "-progress", "pipe:1", "-nostats", *cmd[1:]]
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if on_progress and duration:
+        for line in proc.stdout:
+            if line.startswith("out_time_us=") and line[12:].strip().isdigit():
+                on_progress(min(int(line[12:]) / 1e6 / duration, 1.0))
+    _, err = proc.communicate()
     if proc.returncode != 0:
-        raise RuntimeError(f"{cmd[0]} failed:\n{proc.stderr[-2000:]}")
+        raise RuntimeError(f"{cmd[0]} failed:\n{err[-2000:]}")
+
+
+@functools.cache
+def has_videotoolbox() -> bool:
+    out = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
+    return "h264_videotoolbox" in out
+
+
+def hw_decode() -> list[str]:
+    return ["-hwaccel", "videotoolbox"] if has_videotoolbox() else []
+
+
+def video_encoder() -> list[str]:
+    """Hardware H.264 on Macs (several times faster), libx264 elsewhere."""
+    if has_videotoolbox():
+        return ["-c:v", "h264_videotoolbox", "-q:v", "65"]
+    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
+
+
+def _fps(s: str | None) -> Fraction | None:
+    try:
+        f = Fraction(s)
+        return f if 0 < f <= 240 else None
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def target_fps(r: Fraction | None, avg: Fraction | None) -> Fraction:
+    """Choose a constant output rate. Snap to a standard rate when close, otherwise round."""
+    f = avg or r or Fraction(30)
+    closest = min(COMMON_FPS, key=lambda c: abs(f - c))
+    if abs(f - closest) / closest < 0.02:
+        return closest
+    return Fraction(min(60, max(1, round(f))))
 
 
 def probe(path: Path) -> dict:
@@ -20,28 +73,55 @@ def probe(path: Path) -> dict:
     ).stdout
     info = json.loads(out)
     streams = info.get("streams", [])
-    video = next((s for s in streams if s["codec_type"] == "video"), None)
+    v = next((s for s in streams if s["codec_type"] == "video"), {})
+    a = next((s for s in streams if s["codec_type"] == "audio"), {})
+    r, avg = _fps(v.get("r_frame_rate")), _fps(v.get("avg_frame_rate"))
+    fps = target_fps(r, avg)
     return {
         "duration": float(info["format"].get("duration") or 0),
-        "has_audio": any(s["codec_type"] == "audio" for s in streams),
-        "width": video and video.get("width"),
-        "height": video and video.get("height"),
+        "format": info["format"].get("format_name", ""),
+        "has_audio": bool(a),
+        "acodec": a.get("codec_name"),
+        "vcodec": v.get("codec_name"),
+        "pix_fmt": v.get("pix_fmt"),
+        "width": v.get("width"),
+        "height": v.get("height"),
+        "cfr": r is not None and r == avg,
+        "fps": f"{fps.numerator}/{fps.denominator}",
     }
 
 
-def ingest(raw: Path, source: Path, audio: Path) -> dict:
-    info = probe(raw)
-    if not info["has_audio"]:
-        raise RuntimeError("Recording has no audio track. Enable the microphone when recording.")
+def _atomic(dest: Path) -> Path:
+    """A temp path next to dest. Write there, then rename, so a crash never leaves a half file."""
+    return dest.with_name(dest.stem + ".partial" + dest.suffix)
 
-    # MediaRecorder webm has variable frame rate and poor seek indexes; re-encode to CFR H.264.
-    # Cap width at 1920 and force even dimensions for yuv420p.
-    run([
-        "ffmpeg", "-y", "-i", str(raw),
-        "-vf", f"scale='min(1920,iw)':-2,fps={FPS}",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
-        "-movflags", "+faststart", str(source),
-    ])
-    run(["ffmpeg", "-y", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(audio)])
-    return probe(source)
+
+def extract_audio(raw: Path, audio: Path) -> None:
+    tmp = _atomic(audio)
+    run(["ffmpeg", "-y", "-i", str(raw), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(tmp)])
+    tmp.replace(audio)
+
+
+def can_remux(info: dict) -> bool:
+    return (
+        info["vcodec"] == "h264"
+        and info["pix_fmt"] == "yuv420p"
+        and info["cfr"]
+        and "mp4" in info["format"]
+        and (info["width"] or 0) <= MAX_WIDTH
+    )
+
+
+def convert_video(raw: Path, source: Path, info: dict, on_progress: Callable[[float], None] | None = None) -> None:
+    tmp = _atomic(source)
+    audio = ["-c:a", "copy"] if info["acodec"] == "aac" else ["-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
+    if can_remux(info):
+        cmd = ["ffmpeg", "-y", "-i", str(raw), "-map", "0:v:0", "-map", "0:a:0", "-c:v", "copy", *audio]
+    else:
+        scale = [] if (info["width"] or 0) <= MAX_WIDTH else ["-vf", f"scale={MAX_WIDTH}:-2"]
+        cmd = [
+            "ffmpeg", "-y", *hw_decode(), "-i", str(raw), "-map", "0:v:0", "-map", "0:a:0",
+            *scale, "-fps_mode", "cfr", "-r", info["fps"], *video_encoder(), *audio,
+        ]
+    run([*cmd, "-movflags", "+faststart", str(tmp)], info["duration"], on_progress)
+    tmp.replace(source)

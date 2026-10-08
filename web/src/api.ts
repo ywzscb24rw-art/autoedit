@@ -12,12 +12,14 @@ export interface Edits {
   auto_cuts: Record<string, string>; segment_cuts: Record<string, string>
   order: number[]; clips: Clip[]; summary: string; overrides: Record<string, boolean>
 }
-export interface Output { name: string; file: string; duration: number; cuts: number }
+export interface Output { name: string; file: string; duration: number; cuts: number; export_file?: string }
 export interface State {
   id: string; name: string; created: number
   status: 'new' | 'running' | 'done' | 'error'
-  stage: string | null; progress: number; error: string | null
-  media?: { duration: number; width: number; height: number }
+  stage: string | null; progress: number | null; error: string | null
+  video_progress?: number
+  duplicate?: boolean
+  media?: { duration: number; width: number; height: number; fps: string }
   outputs?: Output[]
 }
 export interface ProjectData {
@@ -52,6 +54,8 @@ export const api = {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ overrides }),
     }).then(json<ProjectData>),
   render: (id: string) => fetch(`/api/projects/${id}/render`, { method: 'POST' }).then(json<State>),
+  export: (id: string, name: string) =>
+    fetch(`/api/projects/${id}/export/${name}`, { method: 'POST' }).then(json<State>),
 }
 
 export const media = (id: string, file: string, bust?: number) =>

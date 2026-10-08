@@ -1,6 +1,7 @@
 """Local Whisper transcription with word-level timestamps, regrouped into sentence segments."""
 
 import os
+import platform
 import re
 import wave
 from pathlib import Path
@@ -10,16 +11,70 @@ from typing import Callable
 # disfluent prompt makes it transcribe them, which we need in order to cut them.
 FILLER_PROMPT = "Umm, so, uh, let me think, like, hmm... Okay. Uh, I mean, um, you know, yeah."
 
-_model = None
+MODEL = os.environ.get("WHISPER_MODEL", "large-v3-turbo")
+
+# On Apple Silicon, MLX runs Whisper on the GPU: about 2x faster than faster-whisper on the CPU,
+# fast enough that large-v3-turbo costs the same time as small.en does on the CPU.
+MLX_REPOS = {
+    "tiny.en": "mlx-community/whisper-tiny.en-mlx",
+    "base.en": "mlx-community/whisper-base.en-mlx",
+    "small.en": "mlx-community/whisper-small.en-mlx",
+    "medium.en": "mlx-community/whisper-medium.en-mlx",
+    "large-v3": "mlx-community/whisper-large-v3-mlx",
+    "large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+}
 
 
-def _get_model():
-    global _model
-    if _model is None:
+def backend() -> str:
+    choice = os.environ.get("WHISPER_BACKEND", "auto")
+    if choice != "auto":
+        return choice
+    if platform.system() == "Darwin" and platform.machine() == "arm64":
+        try:
+            import mlx_whisper  # noqa: F401
+
+            return "mlx"
+        except ImportError:
+            pass
+    return "cpu"
+
+
+_cpu_model = None
+
+
+def _cpu_transcribe(audio, on_progress, duration):
+    global _cpu_model
+    if _cpu_model is None:
         from faster_whisper import WhisperModel
 
-        _model = WhisperModel(os.environ.get("WHISPER_MODEL", "small.en"), device="cpu", compute_type="int8")
-    return _model
+        _cpu_model = WhisperModel(MODEL, device="cpu", compute_type="int8")
+    segs, info = _cpu_model.transcribe(
+        audio,
+        word_timestamps=True,
+        vad_filter=False,  # VAD would hide the silences we want to measure
+        initial_prompt=FILLER_PROMPT,
+        condition_on_previous_text=False,  # avoids repetition loops and keeps fillers coming
+    )
+    for seg in segs:
+        if on_progress and duration:
+            on_progress(min(seg.end / duration, 1.0))
+        for w in seg.words or []:
+            yield w.word, w.start, w.end, w.probability
+
+
+def _mlx_transcribe(audio):
+    import mlx_whisper
+
+    result = mlx_whisper.transcribe(
+        audio,
+        path_or_hf_repo=MLX_REPOS.get(MODEL, MODEL),
+        word_timestamps=True,
+        initial_prompt=FILLER_PROMPT,
+        condition_on_previous_text=False,
+    )
+    for seg in result["segments"]:
+        for w in seg.get("words", []):
+            yield w["word"], w["start"], w["end"], w["probability"]
 
 
 SENTENCE_END = re.compile(r"[.?!]['\")\]]*$")
@@ -63,31 +118,24 @@ def load_wav(path: Path):
 
 
 def transcribe(audio: Path, duration: float, on_progress: Callable[[float], None] | None = None) -> dict:
-    model = _get_model()
-    segs, info = model.transcribe(
-        load_wav(audio),
-        word_timestamps=True,
-        vad_filter=False,  # VAD would hide the silences we want to measure
-        initial_prompt=FILLER_PROMPT,
-        condition_on_previous_text=False,  # avoids repetition loops and keeps fillers coming
-    )
+    """on_progress is only called by the CPU backend; MLX gives no progress callback."""
+    samples = load_wav(audio)
+    raw = _mlx_transcribe(samples) if backend() == "mlx" else _cpu_transcribe(samples, on_progress, duration)
     words = []
-    for seg in segs:
-        for w in seg.words or []:
-            if not w.word.strip():
-                continue
-            words.append({
-                "i": len(words),
-                "w": w.word,  # keeps Whisper's leading space so joins read naturally
-                "start": round(w.start, 3),
-                "end": round(max(w.end, w.start + 0.02), 3),
-                "prob": round(w.probability, 3),
-            })
-        if on_progress and duration:
-            on_progress(min(seg.end / duration, 1.0))
+    for text, start, end, prob in raw:
+        if not text.strip():
+            continue
+        words.append({
+            "i": len(words),
+            "w": text,  # keeps Whisper's leading space so joins read naturally
+            "start": round(start, 3),
+            "end": round(max(end, start + 0.02), 3),
+            "prob": round(prob, 3),
+        })
     return {
-        "language": info.language,
+        "language": "en",
         "duration": duration,
+        "model": f"{backend()}:{MODEL}",
         "words": words,
         "segments": group_segments(words),
     }

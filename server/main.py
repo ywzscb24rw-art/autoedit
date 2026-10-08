@@ -1,6 +1,9 @@
 """HTTP API for the web app.  Run: .venv/bin/uvicorn server.main:app --reload --port 8000"""
 
+import hashlib
+import shutil
 import threading
+from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -11,6 +14,25 @@ from .pipeline import edl, run
 from .project import DATA_DIR, Project
 
 app = FastAPI(title="AutoEdit")
+
+
+@app.on_event("startup")
+def _mark_interrupted_jobs() -> None:
+    # Jobs run in threads of this process, so any job still "running" died with the last server.
+    for p in Project.all():
+        if p.state["status"] == "running":
+            p.update_state(status="error", stage=None, error="Interrupted: the server restarted. Re-run to continue.")
+
+
+def fingerprint(path: Path) -> str:
+    """Size plus a hash of the first and last MiB: cheap, and enough to spot a re-upload."""
+    size = path.stat().st_size
+    h = hashlib.sha1(str(size).encode())
+    with open(path, "rb") as f:
+        h.update(f.read(1 << 20))
+        f.seek(max(0, size - (1 << 20)))
+        h.update(f.read(1 << 20))
+    return h.hexdigest()
 
 
 def _get(pid: str) -> Project:
@@ -36,10 +58,24 @@ def list_projects():
 async def create_project(file: UploadFile = File(...), name: str = Form("Untitled recording")):
     ext = (file.filename or "rec.webm").rsplit(".", 1)[-1].lower()
     p = Project.create(name)
-    with open(p.dir / f"raw.{ext}", "wb") as f:
+    raw = p.dir / f"raw.{ext}"
+    with open(raw, "wb") as f:
         while chunk := await file.read(1 << 20):
             f.write(chunk)
-    return p.state
+    fp = fingerprint(raw)
+    # Uploading the same file again reuses the existing project and its cached conversion
+    # and transcript, instead of processing a second copy.
+    for other in Project.all():
+        if other.id == p.id or other.raw is None:
+            continue
+        other_fp = other.state.get("fingerprint")
+        if other_fp is None and other.raw.stat().st_size == raw.stat().st_size:
+            other_fp = fingerprint(other.raw)
+            other.update_state(fingerprint=other_fp)
+        if other_fp == fp:
+            shutil.rmtree(p.dir)
+            return {**other.state, "duplicate": True}
+    return p.update_state(fingerprint=fp)
 
 
 class ProcessReq(BaseModel):
@@ -101,6 +137,15 @@ def rerender(pid: str):
     if p.read("edits.json") is None:
         raise HTTPException(400, "process the project first")
     _start(p, run.rerender)
+    return p.state
+
+
+@app.post("/api/projects/{pid}/export/{name}")
+def export(pid: str, name: str):
+    p = _get(pid)
+    if not any(o["name"] == name for o in p.state.get("outputs") or []):
+        raise HTTPException(404, "no such output; render first")
+    _start(p, run.export, name)
     return p.state
 
 
