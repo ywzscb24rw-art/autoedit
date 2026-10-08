@@ -2,8 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, CONTENT_LABELS, effectiveStyle, fmt, media, type Content, type ProjectData, type Style } from './api'
 
 const STAGES: Record<string, string> = {
-  queued: 'Queued', ingest: 'Preparing video', transcribe: 'Transcribing',
-  clean: 'Finding fillers and silence', 'ai-edit': 'Claude is editing', scenes: 'Finding scene cuts for B-roll', broll: 'Claude is reviewing B-roll', render: 'Rendering preview', export: 'Exporting full resolution',
+  queued: 'Queued', ingest: 'Preparing video (and a fast preview copy for 4K)', transcribe: 'Transcribing',
+  clean: 'Finding fillers and silence', 'ai-edit': 'Claude is editing', scenes: 'Finding scene cuts for B-roll', broll: 'Claude is reviewing B-roll', proxy: 'Making a fast preview copy (one time)', render: 'Rendering preview', export: 'Exporting full resolution',
 }
 const MAX_GAP = 0.6 // must match EdlParams.max_gap
 
@@ -87,10 +87,12 @@ export default function ProjectPage({ id }: { id: string }) {
             </select>
           )}
           {edits && (() => {
-            const st = effectiveStyle({ ...edits.opts, mode: edits.mode, use_ai: edits.use_ai })
+            const st = effectiveStyle({ ...edits.opts, mode: edits.mode, use_ai: edits.use_ai }, !!state.burned_captions)
             return <>
               <label className="check"><input type="checkbox" checked={st.captions} disabled={running}
-                onChange={(e) => setStyle({ captions: e.target.checked })} /> Captions</label>
+                onChange={(e) => setStyle({ captions: e.target.checked })} /> Captions
+                {state.burned_captions && edits.opts.captions == null &&
+                  <span className="muted" title="We found captions already burned into this video"> (has its own)</span>}</label>
               <label className="check"><input type="checkbox" checked={st.punch_in} disabled={running}
                 onChange={(e) => setStyle({ punch_in: e.target.checked })} /> Punch-ins</label>
             </>

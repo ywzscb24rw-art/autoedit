@@ -68,8 +68,14 @@ def hw_decode(source: Path | None = None) -> list[str]:
     return ["-hwaccel", "videotoolbox"]
 
 
-def video_encoder() -> list[str]:
-    """Hardware H.264 on Macs (several times faster), libx264 elsewhere."""
+def video_encoder(preview: bool = False) -> list[str]:
+    """H.264 encoder options.
+
+    Previews use x264 "ultrafast" on the CPU: the Mac's hardware encoder is quick for one
+    stream but runs parallel jobs one at a time, while x264 renders four pieces at once about
+    4x faster overall. Everything else uses the hardware encoder (libx264 off-Mac)."""
+    if preview:
+        return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "22", "-pix_fmt", "yuv420p"]
     if has_videotoolbox():
         return ["-c:v", "h264_videotoolbox", "-q:v", "65"]
     return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
@@ -151,3 +157,27 @@ def convert_video(raw: Path, source: Path, info: dict, on_progress: Callable[[fl
         ]
     run([*cmd, "-movflags", "+faststart", str(tmp)], info["duration"], on_progress)
     tmp.replace(source)
+
+
+PROXY_HEIGHT = 1080
+
+
+def needs_proxy(source: Path) -> bool:
+    """Previews of footage over 1080p, or with sparse keyframes, render much faster from a proxy."""
+    return probe(source)["height"] > PROXY_HEIGHT or max_keyframe_gap(source) > SPARSE_KEYFRAMES
+
+
+def make_proxy(source: Path, proxy: Path, on_progress: Callable[[float], None] | None = None) -> None:
+    """A 1080p copy with a keyframe every second: cheap to decode and to seek into, for previews
+    and analysis. Exports still render from the full-quality source."""
+    info = probe(source)
+    h = min(PROXY_HEIGHT, info["height"])
+    w = round(info["width"] * h / info["height"] / 2) * 2
+    gop = max(1, round(Fraction(info["fps"])))
+    tmp = _atomic(proxy)
+    run([
+        "ffmpeg", "-y", *hw_decode(source), "-i", str(source), "-map", "0:v:0", "-map", "0:a:0",
+        "-vf", f"scale={w}:{h}", *video_encoder(), "-g", str(gop), "-c:a", "copy",
+        "-movflags", "+faststart", str(tmp),
+    ], info["duration"], on_progress)
+    tmp.replace(proxy)

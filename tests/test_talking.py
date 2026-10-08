@@ -62,3 +62,32 @@ def test_names_and_I_mid_sentence_do_not_break():
     words = W(("moved", 0.0, 0.3), ("to", 0.32, 0.4), ("Miami", 0.42, 0.8), ("and", 1.0, 1.1), ("I", 1.3, 1.35), ("think", 1.4, 1.6))
     texts = [[w["text"] for w in p["words"]] for p in captions.pages(words)]
     assert texts == [["MOVED", "TO", "MIAMI"], ["AND", "I", "THINK"]]
+
+
+def test_caption_line_must_be_low_and_match_speech():
+    from server.pipeline import burnin
+
+    spoken = burnin._tokens("so the target revenue for this month is huge")
+    assert burnin.caption_matches([("TARGET REVENUE THIS", 0.85)], spoken) == {"target", "revenue", "this"}
+    assert burnin.caption_matches([("Target Revenue", 0.30)], spoken) is None  # whiteboard, upper frame
+    assert burnin.caption_matches([("Subscribe now", 0.85)], spoken) is None  # graphic, unrelated
+
+
+def test_static_text_that_matches_speech_is_not_captions():
+    from server.pipeline import burnin
+
+    board = frozenset({"target", "revenue"})
+    assert not burnin.decide([board] * 8 + [None] * 4)  # same text every time: a sign or board
+    varied = [frozenset({f"w{i}", f"x{i}"}) for i in range(8)] + [None] * 4
+    assert burnin.decide(varied)
+    assert not burnin.decide(varied[:2] + [None] * 10)  # an intro with captions isn't the whole video
+
+
+def test_burned_captions_turn_caption_default_off_but_explicit_choice_wins():
+    from server.pipeline import run
+
+    talking = {"opts": {"content": "talking"}}
+    assert run.render_style(talking, "main")["captions"] is True
+    assert run.render_style(talking, "main", burned_captions=True)["captions"] is False
+    forced = {"opts": {"content": "talking", "captions": True}}
+    assert run.render_style(forced, "main", burned_captions=True)["captions"] is True

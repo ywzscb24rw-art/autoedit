@@ -59,10 +59,16 @@ class Project:
         return found[0] if found else None
 
     source = property(lambda self: self.dir / "source.mp4")
+    proxy = property(lambda self: self.dir / "proxy.mp4")
     audio = property(lambda self: self.dir / "audio.wav")
     transcript_path = property(lambda self: self.dir / "transcript.json")
     edits_path = property(lambda self: self.dir / "edits.json")
     outputs = property(lambda self: self.dir / "outputs")
+
+    @property
+    def preview_source(self) -> Path:
+        """The fast 1080p proxy when there is one, else the source."""
+        return self.proxy if self.proxy.exists() else self.source
 
     # ---- json helpers ----
     def read(self, name: str, default=None):

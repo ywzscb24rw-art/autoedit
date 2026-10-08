@@ -10,9 +10,10 @@ export const STYLE_DEFAULTS: Record<Content, { punch_in: boolean; captions: bool
   vlog: { punch_in: false, captions: false },
 }
 export type Style = { punch_in?: boolean | null; captions?: boolean | null }
-export const effectiveStyle = (opts: ProcessOpts) => {
+// Mirrors render_style in server/pipeline/run.py: footage with its own captions defaults to none.
+export const effectiveStyle = (opts: ProcessOpts, burnedCaptions = false) => {
   const d = STYLE_DEFAULTS[opts.content ?? 'screen']
-  return { punch_in: opts.punch_in ?? d.punch_in, captions: opts.captions ?? d.captions }
+  return { punch_in: opts.punch_in ?? d.punch_in, captions: opts.captions ?? (d.captions && !burnedCaptions) }
 }
 
 export interface Word { i: number; w: string; start: number; end: number; prob: number; seg: number }
@@ -33,6 +34,7 @@ export interface State {
   status: 'new' | 'running' | 'done' | 'error'
   stage: string | null; progress: number | null; error: string | null
   video_progress?: number
+  burned_captions?: boolean | null
   duplicate?: boolean
   media?: { duration: number; width: number; height: number; fps: string }
   outputs?: Output[]

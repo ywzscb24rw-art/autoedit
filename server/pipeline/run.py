@@ -5,8 +5,8 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 
 from ..project import Project
-from . import broll, clean, edl, narrate, reframe, render
-from .ingest import convert_video, extract_audio, probe
+from . import broll, burnin, clean, edl, narrate, reframe, render
+from .ingest import convert_video, extract_audio, make_proxy, needs_proxy, probe
 from .transcribe import backend, transcribe
 
 
@@ -20,11 +20,14 @@ STYLE = {
 }
 
 
-def render_style(edits: dict, name: str) -> dict:
-    """render() keyword options for one output."""
+def render_style(edits: dict, name: str, burned_captions: bool = False) -> dict:
+    """render() keyword options for one output. Captions default off when the footage already
+    has its own burned in; an explicit choice in opts always wins."""
     opts = edits.get("opts", {})
-    style = {**STYLE.get(opts.get("content", "screen"), STYLE["screen"]),
-             **{k: opts[k] for k in ("punch_in", "captions") if opts.get(k) is not None}}
+    defaults = dict(STYLE.get(opts.get("content", "screen"), STYLE["screen"]))
+    if burned_captions:
+        defaults["captions"] = False
+    style = {**defaults, **{k: opts[k] for k in ("punch_in", "captions") if opts.get(k) is not None}}
     vertical = bool(opts.get("vertical")) and name != "main"
     return {
         "vertical": vertical,
@@ -42,7 +45,8 @@ def _stage(p: Project, stage: str, progress: float | None) -> None:
 def prepare(p: Project) -> dict:
     """Ingest and transcribe. Both are cached because they're the slow, deterministic stages.
 
-    The audio is extracted first (seconds), so transcription runs while the video converts.
+    The audio is extracted first (seconds), so transcription runs while the video converts
+    and, for 4K or sparse-keyframe footage, a 1080p preview proxy is made.
     """
     if p.raw is None:
         raise RuntimeError("This project has no uploaded video.")
@@ -59,16 +63,23 @@ def prepare(p: Project) -> dict:
 
     video_error: list[BaseException] = []
     video = None
-    if not p.source.exists():
+
+    def progress(f: float) -> None:
+        p.update_state(video_progress=round(f, 3))
+
+    def convert():
+        try:
+            if not p.source.exists():
+                convert_video(p.raw, p.source, info, progress)
+            if not p.proxy.exists() and needs_proxy(p.source):
+                p.update_state(video_progress=0.0)
+                make_proxy(p.source, p.proxy, progress)
+            p.update_state(video_progress=1.0)
+        except BaseException as e:  # re-raised on the main pipeline thread below
+            video_error.append(e)
+
+    if not p.source.exists() or (not p.proxy.exists() and needs_proxy(p.source)):
         p.update_state(video_progress=0.0)
-
-        def convert():
-            try:
-                convert_video(p.raw, p.source, info, lambda f: p.update_state(video_progress=round(f, 3)))
-                p.update_state(video_progress=1.0)
-            except BaseException as e:  # re-raised on the main pipeline thread below
-                video_error.append(e)
-
         video = threading.Thread(target=convert, daemon=True)
         video.start()
 
@@ -85,6 +96,7 @@ def prepare(p: Project) -> dict:
         video.join()
         if video_error:
             raise video_error[0]
+    detect_burned_captions(p, transcript)
     return transcript
 
 
@@ -121,8 +133,15 @@ def edit(p: Project, transcript: dict, mode: str, use_ai: bool, opts: dict) -> d
     return edits
 
 
-def _render_kwargs(transcript: dict, edits: dict, name: str) -> dict:
-    style = render_style(edits, name)
+def detect_burned_captions(p: Project, transcript: dict) -> bool:
+    """Cached in state: does the footage already carry its own captions?"""
+    if p.state.get("burned_captions") is None:
+        p.update_state(burned_captions=burnin.has_burned_captions(p.preview_source, transcript))
+    return p.state["burned_captions"]
+
+
+def _render_kwargs(p: Project, transcript: dict, edits: dict, name: str) -> dict:
+    style = render_style(edits, name, detect_burned_captions(p, transcript))
     words = edl.kept_words(transcript, edits).get(name) if style.pop("captions") else None
     return {**style, "caption_words": words}
 
@@ -137,7 +156,7 @@ def scene_cuts_for(p: Project, transcript: dict, edits: dict) -> list[float]:
     if todo:
         _stage(p, "scenes", None)
         with ThreadPoolExecutor(max_workers=4) as pool:
-            found = list(pool.map(lambda w: reframe.scene_cuts(p.source, w[0], w[1] - w[0]), todo))
+            found = list(pool.map(lambda w: reframe.scene_cuts(p.preview_source, w[0], w[1] - w[0]), todo))
         for w, cuts in zip(todo, found):
             cache[f"{w[0]:.3f}-{w[1]:.3f}"] = cuts
         p.write("cuts.json", cache)
@@ -155,12 +174,20 @@ def broll_filter(p: Project, transcript: dict, edits: dict, cuts: list[float]):
     cache = p.read("broll.json", {})
     if any(broll.key(pc) not in cache for pc in pieces):
         _stage(p, "broll", None)
-        cache = broll.review(p.source, transcript, edits, pieces, cache)
+        cache = broll.review(p.preview_source, transcript, edits, pieces, cache)
         p.write("broll.json", cache)
     return lambda s, e: cache.get(f"{s:.3f}-{e:.3f}", {}).get("keep", True)
 
 
+def ensure_proxy(p: Project) -> None:
+    """Projects from before proxies existed get one on their next render."""
+    if not p.proxy.exists() and needs_proxy(p.source):
+        _stage(p, "proxy", 0.0)
+        make_proxy(p.source, p.proxy, lambda f: _stage(p, "proxy", f))
+
+
 def render_outputs(p: Project, transcript: dict, edits: dict) -> list[dict]:
+    ensure_proxy(p)
     cuts = scene_cuts_for(p, transcript, edits)
     plan = edl.compute(transcript, edits, cuts=cuts, allow=broll_filter(p, transcript, edits, cuts))
     p.write("edl.json", plan)
@@ -176,7 +203,11 @@ def render_outputs(p: Project, transcript: dict, edits: dict) -> list[dict]:
         _stage(p, "render", 0.75 + 0.25 * n / max(1, len(plan)))
         if not ranges:
             continue
-        out = render.render(p.source, ranges, p.outputs / f"{name}.mp4", **_render_kwargs(transcript, edits, name))
+        kw = _render_kwargs(p, transcript, edits, name)
+        # 16:9 previews render from the 1080p proxy. A 9:16 crop needs the full-resolution
+        # source to stay sharp, but its faces are still found on the proxy.
+        src = p.source if kw["vertical"] else p.preview_source
+        out = render.render(src, ranges, p.outputs / f"{name}.mp4", analysis_source=p.preview_source, **kw)
         outputs.append({"name": name, "file": f"outputs/{out.name}", "duration": edl.total(ranges), "cuts": len(ranges)})
     return outputs
 
@@ -190,7 +221,8 @@ def export_output(p: Project, name: str) -> list[dict]:
         raise RuntimeError(f"No rendered output named {name}. Render first.")
     _stage(p, "export", None)
     out = render.render(p.source, plan[name], p.outputs / f"{name}.full.mp4", max_height=None,
-                        **_render_kwargs(p.read("transcript.json"), p.read("edits.json") or {}, name))
+                        analysis_source=p.preview_source,
+                        **_render_kwargs(p, p.read("transcript.json"), p.read("edits.json") or {}, name))
     entry["export_file"] = f"outputs/{out.name}"
     return outputs
 
