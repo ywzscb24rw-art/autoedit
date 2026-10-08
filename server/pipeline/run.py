@@ -4,6 +4,7 @@ import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
+from .. import errors, model_setup
 from ..project import Project
 from . import broll, burnin, clean, edl, hooks, narrate, reframe, render
 from .ingest import convert_video, extract_audio, make_proxy, needs_proxy, probe
@@ -85,6 +86,7 @@ def prepare(p: Project) -> dict:
 
     transcript = p.read("transcript.json")
     if transcript is None:
+        model_setup.require_ready()
         mlx = backend() == "mlx"
         _stage(p, "transcribe", None if mlx else 0.05)
         transcript = transcribe(p.audio, info["duration"], None if mlx else lambda f: _stage(p, "transcribe", 0.05 + 0.6 * f))
@@ -235,8 +237,8 @@ def _guard(p: Project, fn) -> None:
         outputs = fn()
         p.update_state(status="done", stage=None, progress=1.0, outputs=outputs)
     except Exception as e:  # surface every failure in the UI instead of dying silently in a thread
-        traceback.print_exc()
-        p.update_state(status="error", error=f"{type(e).__name__}: {e}")
+        traceback.print_exc()  # full detail goes to the log; the UI gets a plain-English message
+        p.update_state(status="error", error=errors.friendly(e))
 
 
 def process(p: Project, mode: str = "clean", use_ai: bool = True, opts: dict | None = None) -> None:

@@ -1,0 +1,66 @@
+{
+  "name": "autoedit",
+  "productName": "AutoEdit",
+  "version": "0.1.0",
+  "description": "Record, transcribe, and auto-edit your videos",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --mac dmg --arm64"
+  },
+  "build": {
+    "appId": "com.autoedit.beta",
+    "productName": "AutoEdit",
+    "directories": {
+      "output": "../dist",
+      "buildResources": "build-resources"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../build/python",
+        "to": "python"
+      },
+      {
+        "from": "../build/bin",
+        "to": "bin"
+      },
+      {
+        "from": "../build/app",
+        "to": "app"
+      }
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "category": "public.app-category.video",
+      "identity": null,
+      "hardenedRuntime": false,
+      "minimumSystemVersion": "14.0",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "AutoEdit records your voice along with your screen so it can transcribe and edit the video.",
+        "NSCameraUsageDescription": "AutoEdit can include your camera in recordings.",
+        "NSScreenCaptureUsageDescription": "AutoEdit records your screen when you click Start recording."
+      }
+    },
+    "dmg": {
+      "title": "AutoEdit ${version}"
+    },
+    "afterPack": "./after-pack.js"
+  },
+  "devDependencies": {
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3"
+  }
+}

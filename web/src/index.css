@@ -105,3 +105,21 @@ button.rec { background: var(--rec); border-color: var(--rec); display: inline-f
 .gap { display: inline-block; font-size: 11px; color: var(--muted); border: 1px dashed var(--line); border-radius: 4px; padding: 0 4px; margin: 0 4px; text-decoration: line-through; }
 button.link { border: 0; background: none; padding: 0; color: var(--accent); font-size: inherit; text-decoration: underline; }
 .check { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; }
+.nav { margin-left: auto; display: flex; gap: 14px; align-items: center; font-size: 14px; }
+.stack { display: grid; gap: 10px; }
+.row { display: flex; gap: 8px; }
+.row input { flex: 1; }
+input[type=password], input[type=text] { font: inherit; font-size: 14px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+.ok { color: #2b8a3e; margin: 0; }
+.step.done { opacity: .75; }
+button.link.danger { color: var(--ai); margin-left: auto; }
+.home .card + .card { margin-top: 0; }
+code { font-size: 12px; background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; }
+.home > * { min-width: 0; }
+.row input { min-width: 0; }
+code { overflow-wrap: anywhere; }
+.topbar { flex-wrap: wrap; }
+.stack > * { min-width: 0; }
+.row input { width: 100%; }
+.row button { flex-shrink: 0; }
+select { max-width: 100%; }

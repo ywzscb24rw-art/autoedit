@@ -1,4 +1,21 @@
 export type Mode = 'clean' | 'clips'
+
+export interface Settings {
+  has_key: boolean; key_hint: string | null; model: string; models: Record<string, string>
+  data_dir: string
+  speech_model: { status: 'idle' | 'downloading' | 'ready' | 'error'; progress: number; error: string | null; total_bytes: number | null }
+}
+
+// Bridge from the desktop shell (desktop/preload.js); absent when running in a plain browser.
+interface DesktopBridge {
+  version: string
+  showInFolder: (path: string) => void
+  openExternal: (url: string) => void
+  sendFeedback: () => void
+}
+declare global { interface Window { autoedit?: DesktopBridge } }
+export const desktop = window.autoedit
+export const openLink = (url: string) => (desktop ? desktop.openExternal(url) : window.open(url, '_blank'))
 export type Content = 'screen' | 'talking' | 'vlog'
 export const CONTENT_LABELS: Record<Content, string> = {
   screen: 'Screen recording', talking: 'Talking head', vlog: 'Vlog (keeps B-roll)',
@@ -55,6 +72,13 @@ async function json<T>(res: Response): Promise<T> {
 }
 
 export const api = {
+  settings: () => fetch('/api/settings').then(json<Settings>),
+  saveSettings: (body: { api_key?: string; model?: string }) =>
+    fetch('/api/settings', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    }).then(json<Settings>),
+  downloadModel: () => fetch('/api/setup/model', { method: 'POST' }).then(json<unknown>),
+  remove: (id: string) => fetch(`/api/projects/${id}`, { method: 'DELETE' }).then(json<unknown>),
   list: () => fetch('/api/projects').then(json<State[]>),
   get: (id: string) => fetch(`/api/projects/${id}`).then(json<ProjectData>),
   upload: (file: Blob, name: string) => {

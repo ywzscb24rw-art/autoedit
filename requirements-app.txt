@@ -1,0 +1,20 @@
+# What the desktop app bundles (Apple Silicon only). Dev extras live in requirements.txt.
+# mlx-whisper is installed with --no-deps by scripts/build-mac.sh: it declares torch (~600 MB)
+# but only its model-conversion helper uses it. These are the dependencies it really needs:
+mlx
+numba
+numpy
+scipy
+tiktoken
+tqdm
+more-itertools
+huggingface_hub
+fastapi
+uvicorn
+python-multipart
+anthropic
+pydantic
+python-dotenv
+pillow
+pyobjc-framework-Vision
+pyobjc-framework-Quartz

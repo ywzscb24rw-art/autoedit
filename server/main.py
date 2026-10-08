@@ -10,6 +10,7 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from . import model_setup, settings
 from .pipeline import edl, run
 from .project import DATA_DIR, Project
 
@@ -47,6 +48,55 @@ def _start(p: Project, target, *args) -> None:
         raise HTTPException(409, "a job is already running for this project")
     p.update_state(status="running", stage="queued", progress=0.0, error=None)
     threading.Thread(target=target, args=(p, *args), daemon=True).start()
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True}
+
+
+@app.get("/api/settings")
+def get_settings():
+    return {**settings.public(), "speech_model": model_setup.status(), "data_dir": str(DATA_DIR)}
+
+
+class SettingsReq(BaseModel):
+    api_key: str | None = None
+    model: str | None = None
+
+
+@app.put("/api/settings")
+def put_settings(req: SettingsReq):
+    updates: dict = {}
+    if req.model is not None:
+        if req.model not in settings.MODELS:
+            raise HTTPException(400, "unknown model")
+        updates["model"] = req.model
+    if req.api_key is not None:
+        key = req.api_key.strip()
+        _check_key(key)
+        updates["api_key"] = key
+    settings.save(updates)
+    return get_settings()
+
+
+def _check_key(key: str) -> None:
+    """Reject a key Anthropic won't accept, with a message the tester can act on."""
+    import anthropic
+
+    from . import errors
+
+    if not key.startswith("sk-ant-"):
+        raise HTTPException(400, "That doesn't look like an Anthropic API key. Keys start with sk-ant-.")
+    try:
+        anthropic.Anthropic(api_key=key).models.list(limit=1)
+    except anthropic.APIError as e:
+        raise HTTPException(400, errors.friendly(e))
+
+
+@app.post("/api/setup/model")
+def download_model():
+    return model_setup.start()
 
 
 @app.get("/api/projects")
@@ -111,6 +161,15 @@ def get_project(pid: str):
         "cut": {str(k): v for k, v in cut.items()},
         "has_source": p.source.exists(),
     }
+
+
+@app.delete("/api/projects/{pid}")
+def delete_project(pid: str):
+    p = _get(pid)
+    if p.state["status"] == "running":
+        raise HTTPException(409, "wait for the current job to finish before deleting")
+    shutil.rmtree(p.dir)
+    return {"deleted": pid}
 
 
 class OverridesReq(BaseModel):

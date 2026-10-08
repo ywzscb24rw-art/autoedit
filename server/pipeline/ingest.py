@@ -18,6 +18,10 @@ COMMON_FPS = [Fraction(24000, 1001), Fraction(24), Fraction(25), Fraction(30000,
               Fraction(50), Fraction(60000, 1001), Fraction(60)]
 
 
+class FFmpegError(RuntimeError):
+    """ffmpeg or ffprobe failed; the message carries the tail of its stderr for the log."""
+
+
 def run(cmd: list[str], duration: float = 0, on_progress: Callable[[float], None] | None = None) -> None:
     """Run ffmpeg. If on_progress is given, report the fraction of `duration` processed."""
     if on_progress and duration:
@@ -29,7 +33,7 @@ def run(cmd: list[str], duration: float = 0, on_progress: Callable[[float], None
                 on_progress(min(int(line[12:]) / 1e6 / duration, 1.0))
     _, err = proc.communicate()
     if proc.returncode != 0:
-        raise RuntimeError(f"{cmd[0]} failed:\n{err[-2000:]}")
+        raise FFmpegError(f"{cmd[0]} failed:\n{err[-2000:]}")
 
 
 @functools.cache

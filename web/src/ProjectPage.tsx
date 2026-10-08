@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, CONTENT_LABELS, effectiveStyle, fmt, media, type Content, type ProjectData, type Style } from './api'
+import { api, CONTENT_LABELS, desktop, effectiveStyle, fmt, media, type Content, type ProjectData, type Style } from './api'
 
 const STAGES: Record<string, string> = {
   queued: 'Queued', ingest: 'Preparing video (and a fast preview copy for 4K)', transcribe: 'Transcribing',
@@ -7,7 +7,7 @@ const STAGES: Record<string, string> = {
 }
 const MAX_GAP = 0.6 // must match EdlParams.max_gap
 
-export default function ProjectPage({ id }: { id: string }) {
+export default function ProjectPage({ id, dataDir }: { id: string; dataDir: string }) {
   const [data, setData] = useState<ProjectData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [dirty, setDirty] = useState(false)
@@ -121,6 +121,7 @@ export default function ProjectPage({ id }: { id: string }) {
               {fmt(original)} → <strong>{fmt(current.duration)}</strong>
               {current.name === 'main' && <> ({Math.round((1 - current.duration / original) * 100)}% shorter, {current.cuts} pieces)</>}
               {' · '}<a href={media(id, current.file, renderedAt)} download>Download{canExport ? ' 720p preview' : ''}</a>
+              {desktop && <>{' · '}<button className="link" onClick={() => desktop?.showInFolder(`${dataDir}/${id}/${current.export_file ?? current.file}`)}>Show in Finder</button></>}
               {canExport && (current.export_file
                 ? <>{' · '}<a href={media(id, current.export_file, renderedAt)} download>Download {fullLabel}</a></>
                 : <>{' · '}<button className="link" onClick={() => exportFull(current.name)} disabled={running}>Export {fullLabel}</button></>)}

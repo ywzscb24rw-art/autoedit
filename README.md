@@ -14,6 +14,22 @@ npm --prefix web install
 cp .env.example .env   # then add your ANTHROPIC_API_KEY
 ```
 
+## Desktop app (beta)
+
+Testers get a Mac app (Apple Silicon, macOS 14+): an Electron shell (`desktop/`) around the same
+backend and UI, with a standalone Python, MLX Whisper and a static ffmpeg bundled inside.
+
+```bash
+scripts/build-mac.sh          # -> dist/AutoEdit-<version>-arm64.dmg (~310 MB)
+SKIP_FFMPEG=1 scripts/build-mac.sh   # reuse the ffmpeg built last time
+```
+
+- First run: the tester pastes their own Anthropic key (stored in `~/Library/Application Support/AutoEdit/config.json`, mode 0600) and downloads the 1.6 GB speech model.
+- The backend listens on 127.0.0.1 with a per-launch token that's swapped for a same-site cookie, so other sites and programs can't use it.
+- The build is ad-hoc signed (no Apple Developer account yet), so testers click **Open Anyway** once; see `docs/beta/INSTALL.md`.
+- ffmpeg is compiled from ffmpeg.org source with libx264, which makes it GPL. Fine for a private beta; sort out source distribution before a public release.
+- Packaging happens in `~/Library/Caches/AutoEdit-build` because iCloud Drive sync on `~/Documents` breaks code signatures.
+
 ## Run
 
 ```bash

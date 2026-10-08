@@ -40,6 +40,16 @@ export default function HomePage() {
     }
   }
 
+  async function remove(p: State) {
+    if (!confirm(`Delete “${p.name}”? This removes the recording and all its edits from this Mac.`)) return
+    try {
+      await api.remove(p.id)
+      setProjects((ps) => ps.filter((x) => x.id !== p.id))
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    }
+  }
+
   async function start() {
     setError(null)
     const r = new Recorder()
@@ -124,6 +134,7 @@ export default function HomePage() {
               <a href={`#/p/${p.id}`}>{p.name}</a>
               <span className={`badge ${p.status}`}>{p.status}</span>
               {p.media && <span className="muted">{fmt(p.media.duration)}</span>}
+              <button className="link danger" disabled={p.status === 'running'} onClick={() => remove(p)}>Delete</button>
             </li>
           ))}
         </ul>

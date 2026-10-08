@@ -5,11 +5,11 @@ Clips mode finds standalone short-form clips (for clippers).
 """
 
 import json
-import os
 
 import anthropic
 
-MODEL = os.environ.get("CLAUDE_MODEL", "claude-opus-5-5")
+from .. import settings
+
 
 CLEAN_SYSTEM = """You are an expert video editor working from a timestamped transcript of a recording. The first line of the user message describes what kind of video it is. Filler words ("um", "uh") have already been removed automatically. Your job is the editorial pass: decide which sentences stay so that the final video is tight and coherent.
 
@@ -121,11 +121,12 @@ CLIPS_SCHEMA = {
 
 def _call(system: str, user: str | list[dict], schema: dict, effort: str = "high") -> dict:
     """One structured-output request. `user` may be a list of content blocks (text and images)."""
-    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
-        raise RuntimeError("No Claude credentials: add ANTHROPIC_API_KEY to .env, or turn off the AI edit.")
-    client = anthropic.Anthropic()
+    key = settings.api_key()
+    if not key:
+        raise RuntimeError("No Claude API key yet. Add one in Settings, or turn off the AI edit.")
+    client = anthropic.Anthropic(api_key=key)
     with client.beta.messages.stream(
-        model=MODEL,
+        model=settings.model(),
         max_tokens=32000,
         betas=["server-side-fallback-2026-07-01"],
         fallbacks="default",
