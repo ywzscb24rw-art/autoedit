@@ -223,6 +223,17 @@ def total(ranges: list[list[float]]) -> float:
 CONNECTIVES = {"so", "and", "but", "now", "okay", "ok", "alright", "well", "anyway", "anyways", "also", "yeah", "plus"}
 
 
+def _clip_words(transcript: dict, clip: dict, cut: dict[int, str]) -> list[int]:
+    """A clip's words in order. The hook pass may start the clip partway into its first
+    sentence (start_word), skipping a preamble."""
+    order = ordered_kept_words(transcript, clip["segment_ids"], cut)
+    start = clip.get("start_word")
+    if start is None:
+        return order
+    a, _ = transcript["segments"][clip["segment_ids"][0]]["words"]
+    return [i for i in order if not (a <= i < start)]
+
+
 def strip_leading_connectives(words: list[dict], order: list[int], edits: dict, clip: int) -> list[int]:
     """Drop connectives from the start of a clip, unless the user restored one by hand."""
     overrides = edits.get("overrides", {})
@@ -244,7 +255,7 @@ def _plan_inputs(transcript: dict, edits: dict) -> dict[str, list[int]]:
         clip_cut = {i: r for i, r in cut.items() if r != "ai"}
         words = transcript["words"]
         return {
-            f"clip_{n}": strip_leading_connectives(words, ordered_kept_words(transcript, c["segment_ids"], clip_cut), edits, n)
+            f"clip_{n}": strip_leading_connectives(words, _clip_words(transcript, c, clip_cut), edits, n)
             for n, c in enumerate(edits.get("clips", []))
         }
     order = edits.get("order") or [s["id"] for s in transcript["segments"]]

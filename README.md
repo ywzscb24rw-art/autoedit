@@ -41,6 +41,7 @@ Each stage writes a file to `data/projects/<id>/`, so a later stage can be re-ru
 | Clean | `server/pipeline/clean.py` | filler / stutter cuts (rule-based) |
 | AI edit | `server/pipeline/narrate.py` | Claude's keep/cut/order decisions or clip picks → `edits.json` |
 | EDL | `server/pipeline/edl.py` | time ranges → `edl.json` |
+| Hooks | `server/pipeline/hooks.py` | second pass on each clip's opening: keep it, cold-open with the strongest line, or start partway into a sentence |
 | B-roll | `server/pipeline/broll.py` | for vlogs, Claude looks at each proposed non-speech shot and keeps or skips it |
 | Burn-in check | `server/pipeline/burnin.py` | detects captions already in the footage (Apple Vision text recognition matched against the speech) and turns ours off by default |
 | Captions | `server/pipeline/captions.py` | word-by-word burned-in captions (drawn with Pillow, overlaid by ffmpeg) |

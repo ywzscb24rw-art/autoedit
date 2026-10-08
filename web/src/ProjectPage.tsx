@@ -3,7 +3,7 @@ import { api, CONTENT_LABELS, effectiveStyle, fmt, media, type Content, type Pro
 
 const STAGES: Record<string, string> = {
   queued: 'Queued', ingest: 'Preparing video (and a fast preview copy for 4K)', transcribe: 'Transcribing',
-  clean: 'Finding fillers and silence', 'ai-edit': 'Claude is editing', scenes: 'Finding scene cuts for B-roll', broll: 'Claude is reviewing B-roll', proxy: 'Making a fast preview copy (one time)', render: 'Rendering preview', export: 'Exporting full resolution',
+  clean: 'Finding fillers and silence', 'ai-edit': 'Claude is editing', hooks: 'Claude is sharpening clip openings', scenes: 'Finding scene cuts for B-roll', broll: 'Claude is reviewing B-roll', proxy: 'Making a fast preview copy (one time)', render: 'Rendering preview', export: 'Exporting full resolution',
 }
 const MAX_GAP = 0.6 // must match EdlParams.max_gap
 

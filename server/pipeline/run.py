@@ -5,7 +5,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 
 from ..project import Project
-from . import broll, burnin, clean, edl, narrate, reframe, render
+from . import broll, burnin, clean, edl, hooks, narrate, reframe, render
 from .ingest import convert_video, extract_audio, make_proxy, needs_proxy, probe
 from .transcribe import backend, transcribe
 
@@ -121,10 +121,13 @@ def edit(p: Project, transcript: dict, mode: str, use_ai: bool, opts: dict) -> d
         if mode == "clips":
             content = opts.get("content", "screen")
             lo, hi = CLIP_LENGTHS.get(content, CLIP_LENGTHS["screen"])
-            edits.update(narrate.find_clips(
+            picked = narrate.find_clips(
                 transcript, auto, content=content,
                 min_s=opts.get("min_s") or lo, max_s=opts.get("max_s") or hi, max_clips=opts.get("max_clips", 5),
-            ))
+            )
+            _stage(p, "hooks", None)
+            picked["clips"] = hooks.polish(transcript, auto, picked["clips"], content)
+            edits.update(picked)
         else:
             edits.update(narrate.clean_edit(transcript, auto, content=opts.get("content", "screen")))
     elif mode == "clips":
