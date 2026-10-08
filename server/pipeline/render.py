@@ -12,11 +12,14 @@ from concurrent.futures import ThreadPoolExecutor
 from fractions import Fraction
 from pathlib import Path
 
+from . import captions as cap
 from . import reframe
 from .ingest import has_videotoolbox, hw_decode, probe, run, video_encoder
 
 FADE = 0.01  # 10 ms audio fades hide the click at each cut
 PREVIEW_HEIGHT = 1080  # previews of 4K footage render about 3x faster at 1080p
+PUNCH_LEVELS = (1.0, 1.15)  # alternate framings at jump cuts in talking-head edits
+PUNCH_MIN_PIECE = 0.8  # pieces shorter than this keep the previous framing (no flicker)
 
 
 def snap(t: float, fps: Fraction) -> float:
@@ -28,41 +31,73 @@ def timescale(fps: Fraction) -> str:
     return str(fps.numerator * (1000 if fps.denominator == 1 else 1))
 
 
-def _video_args(source: Path, info: dict, s: float, e: float, vertical: bool, max_height: int | None,
-                face_track: bool, tmp: Path) -> tuple[list[str], list[str]]:
-    """(decoder options, filter options) for one piece."""
+def output_size(info: dict, vertical: bool, max_height: int | None) -> tuple[int, int]:
+    if vertical:
+        return 1080, 1920
     w, h = info["width"], info["height"]
+    if max_height and h > max_height:
+        return round(w * max_height / h / 2) * 2, max_height
+    return w, h
+
+
+def punch_plan(durations: list[float]) -> list[float]:
+    """Zoom level per piece: toggle at every jump cut, except into a very short piece."""
+    zooms, cur = [], 0
+    for k, d in enumerate(durations):
+        if k and d >= PUNCH_MIN_PIECE:
+            cur ^= 1
+        zooms.append(PUNCH_LEVELS[cur])
+    return zooms
+
+
+def _video_args(source: Path, info: dict, s: float, e: float, vertical: bool, size: tuple[int, int],
+                face_track: bool, zoom: float, gpu_ok: bool, tmp: Path) -> tuple[list[str], str | None]:
+    """(decoder options, video filter chain) for one piece."""
+    w, h = info["width"], info["height"]
+    face = reframe.face_at(source, (s + e) / 2) if zoom > 1 else None
     if vertical:
         keys = reframe.track(source, w, h, s, e - s) if face_track else reframe.centre(w, h)
-        return hw_decode(), ["-vf", reframe.crop_filter(keys, w, h, tmp)]
-    if max_height and h > max_height:
-        sw = round(w * max_height / h / 2) * 2
-        if has_videotoolbox():
-            # Decode, scale and encode all on the GPU; frames never touch the CPU.
-            return (["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"],
-                    ["-vf", f"scale_vt=w={sw}:h={max_height}"])
-        return [], ["-vf", f"scale={sw}:{max_height}"]
-    return hw_decode(), []
+        return hw_decode(), reframe.crop_filter(keys, w, h, tmp, zoom, face)
+    ow, oh = size
+    if zoom > 1:
+        cw, ch, x, y = reframe.zoom_box(w, h, ow, oh, zoom, face)
+        return hw_decode(), f"crop={cw}:{ch}:{x}:{y},scale={ow}:{oh}"
+    if (ow, oh) == (w, h):
+        return hw_decode(), None
+    if gpu_ok and has_videotoolbox():
+        # Decode, scale and encode all on the GPU; frames never touch the CPU.
+        return ["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"], f"scale_vt=w={ow}:h={oh}"
+    return hw_decode(), f"scale={ow}:{oh}"
 
 
-def _piece(source: Path, s: float, e: float, out: Path, fps: Fraction, video: tuple[list[str], list[str]]) -> None:
+def _piece(source: Path, s: float, e: float, out: Path, fps: Fraction, decode: list[str],
+           vf: str | None, caption_track: Path | None, size: tuple[int, int]) -> None:
     d = e - s
-    decode, filters = video
+    inputs = [*decode, "-ss", f"{s:.6f}", "-t", f"{d:.6f}", "-i", str(source)]
+    if caption_track:
+        _, strip_h, top = cap.layout(*size)
+        inputs += ["-f", "concat", "-safe", "0", "-i", str(caption_track)]
+        video = ["-filter_complex", f"[0:v]{vf or 'null'}[v];[v][1:v]overlay=0:{top}:eof_action=pass[out]",
+                 "-map", "[out]", "-map", "0:a"]
+    else:
+        video = ["-vf", vf] if vf else []
     run([
-        "ffmpeg", "-y", *decode, "-ss", f"{s:.6f}", "-i", str(source), "-t", f"{d:.6f}",
-        *filters,
+        "ffmpeg", "-y", *inputs, *video,
         "-af", f"afade=t=in:d={FADE},afade=t=out:st={max(0.0, d - FADE):.6f}:d={FADE}",
         *video_encoder(),
         "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2",
-        "-video_track_timescale", timescale(fps),
+        "-t", f"{d:.6f}", "-video_track_timescale", timescale(fps),
         str(out),
     ])
 
 
 def render(source: Path, ranges: list[list[float]], out: Path, vertical: bool = False,
-           max_height: int | None = PREVIEW_HEIGHT, face_track: bool = True) -> Path:
+           max_height: int | None = PREVIEW_HEIGHT, face_track: bool = True,
+           punch_in: bool = False, caption_words: list[dict] | None = None) -> Path:
     """max_height=None renders at the source's full resolution (export).
-    Vertical renders follow faces unless face_track is False (then they crop the centre)."""
+    Vertical renders follow faces unless face_track is False (then they crop the centre).
+    punch_in alternates framings at jump cuts; caption_words (kept words, source times)
+    burns in captions."""
     info = probe(source)
     fps = Fraction(info["fps"])
     snapped = []
@@ -73,6 +108,12 @@ def render(source: Path, ranges: list[list[float]], out: Path, vertical: bool = 
     if not snapped:
         raise RuntimeError("Nothing left to render. Every word was cut.")
 
+    size = output_size(info, vertical, max_height)
+    zooms = punch_plan([e - s for s, e in snapped]) if punch_in else [1.0] * len(snapped)
+    # Mixing GPU- and CPU-processed pieces could give the joined file inconsistent stream
+    # parameters, so the GPU-only path is used only when no piece needs CPU filters.
+    gpu_ok = not punch_in and not caption_words
+
     tmp = Path(tempfile.mkdtemp(prefix="autoedit-"))
     try:
         pieces = [tmp / f"p{n:05d}.mov" for n in range(len(snapped))]
@@ -81,7 +122,9 @@ def render(source: Path, ranges: list[list[float]], out: Path, vertical: bool = 
                 (s, e), out_piece = snapped[n], pieces[n]
                 work = tmp / f"w{n:05d}"
                 work.mkdir()
-                _piece(source, s, e, out_piece, fps, _video_args(source, info, s, e, vertical, max_height, face_track, work))
+                decode, vf = _video_args(source, info, s, e, vertical, size, face_track, zooms[n], gpu_ok, work)
+                track = cap.track(caption_words, s, e, *size, work) if caption_words else None
+                _piece(source, s, e, out_piece, fps, decode, vf, track, size)
 
             list(pool.map(one, range(len(snapped))))
         listing = tmp / "list.txt"

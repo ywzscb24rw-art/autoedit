@@ -104,3 +104,4 @@ button.rec { background: var(--rec); border-color: var(--rec); display: inline-f
 .legend .w { padding: 1px 6px; cursor: default; }
 .gap { display: inline-block; font-size: 11px; color: var(--muted); border: 1px dashed var(--line); border-radius: 4px; padding: 0 4px; margin: 0 4px; text-decoration: line-through; }
 button.link { border: 0; background: none; padding: 0; color: var(--accent); font-size: inherit; text-decoration: underline; }
+.check { display: inline-flex; gap: 6px; align-items: center; font-size: 14px; }

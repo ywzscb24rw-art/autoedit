@@ -8,3 +8,4 @@ pydantic
 python-dotenv
 pytest
 pyobjc-framework-Vision; sys_platform == 'darwin'
+pillow

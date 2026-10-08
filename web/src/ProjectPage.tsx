@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, CONTENT_LABELS, fmt, media, type Content, type ProjectData } from './api'
+import { api, CONTENT_LABELS, effectiveStyle, fmt, media, type Content, type ProjectData, type Style } from './api'
 
 const STAGES: Record<string, string> = {
   queued: 'Queued', ingest: 'Preparing video', transcribe: 'Transcribing',
@@ -58,6 +58,7 @@ export default function ProjectPage({ id }: { id: string }) {
     load()
   }
   async function render() { await api.render(id); load() }
+  async function setStyle(style: Style) { setData(await api.style(id, style)); setDirty(true) }
   async function exportFull(name: string) { await api.export(id, name); load() }
 
   function seek(t: number) {
@@ -85,6 +86,15 @@ export default function ProjectPage({ id }: { id: string }) {
               {Object.entries(CONTENT_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
             </select>
           )}
+          {edits && (() => {
+            const st = effectiveStyle({ ...edits.opts, mode: edits.mode, use_ai: edits.use_ai })
+            return <>
+              <label className="check"><input type="checkbox" checked={st.captions} disabled={running}
+                onChange={(e) => setStyle({ captions: e.target.checked })} /> Captions</label>
+              <label className="check"><input type="checkbox" checked={st.punch_in} disabled={running}
+                onChange={(e) => setStyle({ punch_in: e.target.checked })} /> Punch-ins</label>
+            </>
+          })()}
           {edits && <button onClick={() => rerun()} disabled={running}>{edits.use_ai ? 'Re-run AI edit' : 'Re-run cleanup'}</button>}
           {edits && <button className={dirty ? 'primary' : ''} onClick={render} disabled={running}>Render{dirty ? ' changes' : ''}</button>}
         </div>

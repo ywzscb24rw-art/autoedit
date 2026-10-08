@@ -13,6 +13,7 @@ Without Vision (non-Mac) or when no face is found at all, the crop falls back to
 """
 
 import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +36,7 @@ class Face:
     cx: float  # centre x, 0..1 of frame width
     w: float  # width, 0..1 of frame width
     area: float
+    cy: float = 0.5  # centre y, 0..1 of frame height, from the top
 
 
 def detect_faces(jpeg: bytes) -> list[Face]:
@@ -55,9 +57,9 @@ def detect_faces(jpeg: bytes) -> list[Face]:
     def boxes(req, min_conf):
         out = []
         for obs in req.results() or []:
-            (x, _y), (w, h) = obs.boundingBox()
+            (x, y), (w, h) = obs.boundingBox()  # Vision's origin is bottom-left
             if obs.confidence() >= min_conf:
-                out.append(Face(cx=x + w / 2, w=w, area=w * h))
+                out.append(Face(cx=x + w / 2, w=w, area=w * h, cy=1 - (y + h / 2)))
         return out
 
     faces = boxes(faces_req, 0.5)
@@ -65,7 +67,8 @@ def detect_faces(jpeg: bytes) -> list[Face]:
         return faces
     # A person box is much bigger than a face; scale its area down so the same
     # "group" and "largest" rules in subject_x still compare sensibly.
-    return [Face(cx=f.cx, w=f.w * 0.4, area=f.area * 0.1) for f in boxes(people_req, 0.6)]
+    # Upper-body boxes: the head sits near the top.
+    return [Face(cx=f.cx, w=f.w * 0.4, area=f.area * 0.1, cy=max(0.0, f.cy - 0.25)) for f in boxes(people_req, 0.6)]
 
 
 def vision_available() -> bool:
@@ -256,10 +259,49 @@ def track(source: Path, width: int, height: int, start: float, dur: float) -> li
     return keyframes(camera_path(targets, split_shots(thumbs, strong_only=True), crop_w), width, crop_px)
 
 
-def crop_filter(keys: list[tuple[float, int]], width: int, height: int, tmp: Path) -> str:
+def face_at(source: Path, t: float) -> Face | None:
+    """The largest face in the frame at time t, or None (also None without Vision)."""
+    if not vision_available():
+        return None
+    from .ingest import hw_decode
+
+    tmp = Path(tempfile.mkdtemp(prefix="autoedit-face-"))
+    try:
+        f = tmp / "f.jpg"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", *hw_decode(), "-ss", f"{t:.3f}", "-i", str(source),
+                        "-frames:v", "1", "-vf", f"scale={ANALYSIS_WIDTH}:-2", str(f)], check=True)
+        faces = detect_faces(f.read_bytes()) if f.exists() else []
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    return max(faces, key=lambda x: x.area, default=None)
+
+
+EYE_LINE = 0.38  # where a punched-in face's centre sits, from the top of the frame
+
+
+def zoom_box(width: int, height: int, out_w: int, out_h: int, zoom: float, face: Face | None) -> tuple[int, int, int, int]:
+    """Crop (w, h, x, y) in source pixels for an out_w:out_h frame at `zoom`, framed on the face."""
+    ch = min(height, round(height / zoom / 2) * 2)
+    cw = min(width, round(ch * out_w / out_h / 2) * 2)
+    cx = (face.cx if face else 0.5) * width
+    cy = (face.cy if face else 0.5) * height
+    x = int(min(max(cx - cw / 2, 0), width - cw)) // 2 * 2
+    y = int(min(max(cy - EYE_LINE * ch, 0), height - ch)) // 2 * 2 if zoom > 1 else (height - ch) // 2
+    return cw, ch, x, y
+
+
+def crop_filter(keys: list[tuple[float, int]], width: int, height: int, tmp: Path,
+                zoom: float = 1.0, face: Face | None = None) -> str:
     """ffmpeg filter that crops to 9:16 following the keyframes, then scales to 1080x1920."""
     crop_px = crop_width(width, height)
+    # A punch-in narrows the 9:16 window around the same centre, with the face on the eye line.
+    cw, ch, _, y = zoom_box(width, height, 1080, 1920, zoom, face)
+    shift = (crop_px - cw) // 2
+
+    def x_of(x: int) -> int:
+        return min(max(x + shift, 0), width - cw) // 2 * 2
+
     cmds = tmp / "crop.cmd"
-    cmds.write_text("".join(f"{t:.3f} crop x {x};\n" for t, x in keys[1:]))
+    cmds.write_text("".join(f"{t:.3f} crop x {x_of(x)};\n" for t, x in keys[1:]))
     head = f"sendcmd=f='{cmds}'," if len(keys) > 1 else ""
-    return f"{head}crop={crop_px}:{height}:{keys[0][1]}:0,scale=1080:1920"
+    return f"{head}crop={cw}:{ch}:{x_of(keys[0][1])}:{y},scale=1080:1920"

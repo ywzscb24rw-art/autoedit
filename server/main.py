@@ -82,6 +82,8 @@ class ProcessReq(BaseModel):
     mode: Literal["clean", "clips"] = "clean"
     use_ai: bool = True
     vertical: bool = False
+    punch_in: bool | None = None  # None: the content type's default
+    captions: bool | None = None
     content: Literal["screen", "talking", "vlog"] = "screen"
     min_s: float | None = None  # None: the content type's default clip length
     max_s: float | None = None
@@ -128,6 +130,23 @@ def patch_overrides(pid: str, req: OverridesReq):
             ov.pop(k, None)
         else:
             ov[k] = v
+    p.write("edits.json", edits)
+    return get_project(pid)
+
+
+class StyleReq(BaseModel):
+    punch_in: bool | None = None
+    captions: bool | None = None
+
+
+@app.patch("/api/projects/{pid}/style")
+def patch_style(pid: str, req: StyleReq):
+    """Change render-only options (no AI re-run); takes effect on the next render."""
+    p = _get(pid)
+    edits = p.read("edits.json")
+    if edits is None:
+        raise HTTPException(400, "process the project first")
+    edits.setdefault("opts", {}).update(req.model_dump(exclude_unset=True))
     p.write("edits.json", edits)
     return get_project(pid)
 

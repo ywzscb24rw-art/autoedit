@@ -106,3 +106,11 @@ def test_review_batch_maps_decisions_and_skips_unanswered(monkeypatch):
     out = broll._review_batch([("b0", pieces[0], ["x"]), ("b1", pieces[1], ["y", "z"])], t, {"opts": {"content": "vlog"}})
     assert seen["images"] == 3
     assert out == {"1.620-2.500": {"keep": True, "why": "reaction"}, "2.500-3.920": {"keep": False, "why": "no decision"}}
+
+
+def test_talking_head_preset_closes_short_pauses():
+    words = W(("one", 1.0, 1.5), ("two", 1.9, 2.4))  # a 0.4s breath
+    screen = edl.build_ranges(words, [0, 1], 10.0, edl.params_for({"opts": {"content": "screen"}}))
+    talking = edl.build_ranges(words, [0, 1], 10.0, edl.params_for({"opts": {"content": "talking"}}))
+    assert len(screen) == 1  # kept whole
+    assert len(talking) == 2 and talking[1][0] - talking[0][1] > 0.2  # breath removed

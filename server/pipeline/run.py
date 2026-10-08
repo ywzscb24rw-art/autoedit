@@ -12,6 +12,26 @@ from .transcribe import backend, transcribe
 
 # Default clip length (seconds) per content type. Vlog moments are short and punchy.
 CLIP_LENGTHS = {"screen": (30, 90), "talking": (30, 90), "vlog": (15, 60)}
+# Style defaults per content type; opts can override each one.
+STYLE = {
+    "screen": {"punch_in": False, "captions": False},
+    "talking": {"punch_in": True, "captions": True},
+    "vlog": {"punch_in": False, "captions": False},  # vlogs usually carry their own subtitles
+}
+
+
+def render_style(edits: dict, name: str) -> dict:
+    """render() keyword options for one output."""
+    opts = edits.get("opts", {})
+    style = {**STYLE.get(opts.get("content", "screen"), STYLE["screen"]),
+             **{k: opts[k] for k in ("punch_in", "captions") if opts.get(k) is not None}}
+    vertical = bool(opts.get("vertical")) and name != "main"
+    return {
+        "vertical": vertical,
+        "face_track": opts.get("reframe", "face") == "face",
+        "punch_in": style["punch_in"],
+        "captions": style["captions"],
+    }
 
 
 def _stage(p: Project, stage: str, progress: float | None) -> None:
@@ -101,6 +121,12 @@ def edit(p: Project, transcript: dict, mode: str, use_ai: bool, opts: dict) -> d
     return edits
 
 
+def _render_kwargs(transcript: dict, edits: dict, name: str) -> dict:
+    style = render_style(edits, name)
+    words = edl.kept_words(transcript, edits).get(name) if style.pop("captions") else None
+    return {**style, "caption_words": words}
+
+
 def scene_cuts_for(p: Project, transcript: dict, edits: dict) -> list[float]:
     """Scene cuts inside the stretches of footage that B-roll may keep (cached per stretch)."""
     wins = edl.windows(transcript, edits)
@@ -138,7 +164,6 @@ def render_outputs(p: Project, transcript: dict, edits: dict) -> list[dict]:
     cuts = scene_cuts_for(p, transcript, edits)
     plan = edl.compute(transcript, edits, cuts=cuts, allow=broll_filter(p, transcript, edits, cuts))
     p.write("edl.json", plan)
-    vertical = bool(edits.get("opts", {}).get("vertical"))
     # Only replace this mode's outputs, so a clean edit and its clips can coexist.
     clips = edits.get("mode") == "clips"
     for old in p.outputs.glob("clip_*.mp4" if clips else "main*.mp4"):  # previews and their exports
@@ -151,8 +176,7 @@ def render_outputs(p: Project, transcript: dict, edits: dict) -> list[dict]:
         _stage(p, "render", 0.75 + 0.25 * n / max(1, len(plan)))
         if not ranges:
             continue
-        out = render.render(p.source, ranges, p.outputs / f"{name}.mp4", vertical=vertical and name != "main",
-                            face_track=edits.get("opts", {}).get("reframe", "face") == "face")
+        out = render.render(p.source, ranges, p.outputs / f"{name}.mp4", **_render_kwargs(transcript, edits, name))
         outputs.append({"name": name, "file": f"outputs/{out.name}", "duration": edl.total(ranges), "cuts": len(ranges)})
     return outputs
 
@@ -165,9 +189,8 @@ def export_output(p: Project, name: str) -> list[dict]:
     if entry is None or not plan.get(name):
         raise RuntimeError(f"No rendered output named {name}. Render first.")
     _stage(p, "export", None)
-    vertical = bool((p.read("edits.json") or {}).get("opts", {}).get("vertical")) and name != "main"
-    out = render.render(p.source, plan[name], p.outputs / f"{name}.full.mp4", vertical=vertical, max_height=None,
-                        face_track=(p.read("edits.json") or {}).get("opts", {}).get("reframe", "face") == "face")
+    out = render.render(p.source, plan[name], p.outputs / f"{name}.full.mp4", max_height=None,
+                        **_render_kwargs(p.read("transcript.json"), p.read("edits.json") or {}, name))
     entry["export_file"] = f"outputs/{out.name}"
     return outputs
 

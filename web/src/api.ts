@@ -3,6 +3,17 @@ export type Content = 'screen' | 'talking' | 'vlog'
 export const CONTENT_LABELS: Record<Content, string> = {
   screen: 'Screen recording', talking: 'Talking head', vlog: 'Vlog (keeps B-roll)',
 }
+// Must match STYLE in server/pipeline/run.py.
+export const STYLE_DEFAULTS: Record<Content, { punch_in: boolean; captions: boolean }> = {
+  screen: { punch_in: false, captions: false },
+  talking: { punch_in: true, captions: true },
+  vlog: { punch_in: false, captions: false },
+}
+export type Style = { punch_in?: boolean | null; captions?: boolean | null }
+export const effectiveStyle = (opts: ProcessOpts) => {
+  const d = STYLE_DEFAULTS[opts.content ?? 'screen']
+  return { punch_in: opts.punch_in ?? d.punch_in, captions: opts.captions ?? d.captions }
+}
 
 export interface Word { i: number; w: string; start: number; end: number; prob: number; seg: number }
 export interface Segment { id: number; start: number; end: number; words: [number, number]; text: string }
@@ -32,6 +43,7 @@ export interface ProjectData {
 }
 export interface ProcessOpts {
   mode: Mode; use_ai: boolean; vertical?: boolean; content?: Content
+  punch_in?: boolean | null; captions?: boolean | null
   min_s?: number | null; max_s?: number | null; max_clips?: number
 }
 
@@ -57,6 +69,10 @@ export const api = {
   overrides: (id: string, overrides: Record<string, boolean | null>) =>
     fetch(`/api/projects/${id}/overrides`, {
       method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ overrides }),
+    }).then(json<ProjectData>),
+  style: (id: string, style: Style) =>
+    fetch(`/api/projects/${id}/style`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(style),
     }).then(json<ProjectData>),
   render: (id: string) => fetch(`/api/projects/${id}/render`, { method: 'POST' }).then(json<State>),
   export: (id: string, name: string) =>

@@ -20,7 +20,11 @@ class EdlParams:
 # pause; vlogs do (reactions, scenery, B-roll), so pauses are kept rather than compressed.
 PRESETS = {
     "screen": {"clean": EdlParams(), "clips": EdlParams(broll_tail=0.6)},
-    "talking": {"clean": EdlParams(), "clips": EdlParams(broll_lead=0.2, broll_tail=0.8)},
+    # Talking heads are cut tight: any pause over 0.3s (breaths, thinking) closes to ~0.15s.
+    "talking": {
+        "clean": EdlParams(max_gap=0.3, pad_before=0.06, pad_after=0.09),
+        "clips": EdlParams(max_gap=0.3, pad_before=0.06, pad_after=0.09, broll_lead=0.2, broll_tail=0.8),
+    },
     "vlog": {
         "clean": EdlParams(broll_gap=6.0, broll_lead=1.0, broll_tail=2.0),
         "clips": EdlParams(broll_gap=2.5, broll_lead=1.0, broll_tail=2.0),
@@ -226,6 +230,12 @@ def _plan_inputs(transcript: dict, edits: dict) -> dict[str, list[int]]:
         }
     order = edits.get("order") or [s["id"] for s in transcript["segments"]]
     return {"main": ordered_kept_words(transcript, order, cut)}
+
+
+def kept_words(transcript: dict, edits: dict) -> dict[str, list[dict]]:
+    """Output name -> the words that survive the edit (source times), for captions."""
+    words = transcript["words"]
+    return {name: [words[i] for i in order] for name, order in _plan_inputs(transcript, edits).items()}
 
 
 def windows(transcript: dict, edits: dict, p: EdlParams | None = None) -> list[tuple[float, float]]:
