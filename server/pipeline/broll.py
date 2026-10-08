@@ -84,7 +84,7 @@ def _frames(source: Path, piece: dict, tmp: Path, n: int) -> list[str]:
     for j, t in enumerate(times):
         f = tmp / f"p{n:04d}_{j}.jpg"
         subprocess.run(
-            ["ffmpeg", "-v", "error", "-y", *hw_decode(), "-ss", f"{t:.3f}", "-i", str(source),
+            ["ffmpeg", "-v", "error", "-y", *hw_decode(source), "-ss", f"{t:.3f}", "-i", str(source),
              "-frames:v", "1", "-vf", f"scale={FRAME_WIDTH}:-2", "-q:v", "5", str(f)],
             check=True,
         )

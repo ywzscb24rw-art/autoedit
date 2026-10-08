@@ -30,3 +30,22 @@ def test_snap_to_ntsc_frames():
     fps = Fraction(30000, 1001)
     t = snap(10.0, fps)
     assert abs(t * float(fps) - round(t * float(fps))) < 1e-9
+
+
+def test_sparse_keyframes_decode_in_software(tmp_path):
+    import subprocess
+
+    from server.pipeline import ingest
+
+    def make(name, gop):
+        f = tmp_path / name
+        subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=24", "-t", "12",
+                        "-c:v", "libx264", "-g", str(gop), "-keyint_min", str(gop), "-sc_threshold", "0", str(f)], check=True)
+        return f
+
+    dense, sparse = make("dense.mp4", 24), make("sparse.mp4", 240)
+    assert abs(ingest.max_keyframe_gap(dense) - 1.0) < 0.01
+    assert ingest.max_keyframe_gap(sparse) >= 10
+    if ingest.has_videotoolbox():
+        assert ingest.hw_decode(dense) == ["-hwaccel", "videotoolbox"]
+    assert ingest.hw_decode(sparse) == []

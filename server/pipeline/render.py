@@ -14,7 +14,7 @@ from pathlib import Path
 
 from . import captions as cap
 from . import reframe
-from .ingest import has_videotoolbox, hw_decode, probe, run, video_encoder
+from .ingest import hw_decode, probe, run, video_encoder
 
 FADE = 0.01  # 10 ms audio fades hide the click at each cut
 PREVIEW_HEIGHT = 1080  # previews of 4K footage render about 3x faster at 1080p
@@ -57,17 +57,17 @@ def _video_args(source: Path, info: dict, s: float, e: float, vertical: bool, si
     face = reframe.face_at(source, (s + e) / 2) if zoom > 1 else None
     if vertical:
         keys = reframe.track(source, w, h, s, e - s) if face_track else reframe.centre(w, h)
-        return hw_decode(), reframe.crop_filter(keys, w, h, tmp, zoom, face)
+        return hw_decode(source), reframe.crop_filter(keys, w, h, tmp, zoom, face)
     ow, oh = size
     if zoom > 1:
         cw, ch, x, y = reframe.zoom_box(w, h, ow, oh, zoom, face)
-        return hw_decode(), f"crop={cw}:{ch}:{x}:{y},scale={ow}:{oh}"
+        return hw_decode(source), f"crop={cw}:{ch}:{x}:{y},scale={ow}:{oh}"
     if (ow, oh) == (w, h):
-        return hw_decode(), None
-    if gpu_ok and has_videotoolbox():
+        return hw_decode(source), None
+    if gpu_ok and hw_decode(source):
         # Decode, scale and encode all on the GPU; frames never touch the CPU.
         return ["-hwaccel", "videotoolbox", "-hwaccel_output_format", "videotoolbox_vld"], f"scale_vt=w={ow}:h={oh}"
-    return hw_decode(), f"scale={ow}:{oh}"
+    return hw_decode(source), f"scale={ow}:{oh}"
 
 
 def _piece(source: Path, s: float, e: float, out: Path, fps: Fraction, decode: list[str],

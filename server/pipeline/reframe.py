@@ -213,7 +213,7 @@ def _sample(source: Path, start: float, dur: float, tmp: Path, jpegs: bool = Tru
         outputs = ["-map", "[raw]"]
     run([
         # -t before -i limits the input, so every output stops at the range end.
-        "ffmpeg", "-y", *hw_decode(), "-ss", f"{start:.6f}", "-t", f"{dur:.6f}", "-i", str(source),
+        "ffmpeg", "-y", *hw_decode(source), "-ss", f"{start:.6f}", "-t", f"{dur:.6f}", "-i", str(source),
         "-filter_complex", graph, *outputs, "-f", "rawvideo", str(tmp / "thumbs.raw"),
     ])
     frames = sorted(tmp.glob("f*.jpg"))
@@ -268,7 +268,7 @@ def face_at(source: Path, t: float) -> Face | None:
     tmp = Path(tempfile.mkdtemp(prefix="autoedit-face-"))
     try:
         f = tmp / "f.jpg"
-        subprocess.run(["ffmpeg", "-v", "error", "-y", *hw_decode(), "-ss", f"{t:.3f}", "-i", str(source),
+        subprocess.run(["ffmpeg", "-v", "error", "-y", *hw_decode(source), "-ss", f"{t:.3f}", "-i", str(source),
                         "-frames:v", "1", "-vf", f"scale={ANALYSIS_WIDTH}:-2", str(f)], check=True)
         faces = detect_faces(f.read_bytes()) if f.exists() else []
     finally:

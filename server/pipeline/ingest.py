@@ -38,8 +38,34 @@ def has_videotoolbox() -> bool:
     return "h264_videotoolbox" in out
 
 
-def hw_decode() -> list[str]:
-    return ["-hwaccel", "videotoolbox"] if has_videotoolbox() else []
+SPARSE_KEYFRAMES = 4.0  # seconds; beyond this, seeking with the hardware decoder gets slow
+
+
+@functools.cache
+def max_keyframe_gap(path: Path) -> float:
+    """Longest stretch between keyframes, from packet flags (no decoding, ~1s for an hour)."""
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "packet=pts_time,flags",
+         "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+    ).stdout
+    keys = sorted(float(t) for t, _, f in (ln.partition(",") for ln in out.splitlines()) if "K" in f and t not in ("", "N/A"))
+    if len(keys) < 2:
+        return float("inf")
+    return max(b - a for a, b in zip(keys, keys[1:]))
+
+
+def hw_decode(source: Path | None = None) -> list[str]:
+    """Hardware decoding options for seeking into `source`.
+
+    Some files (often re-encoded downloads) have keyframes minutes apart. Seeking into them
+    means decoding everything since the last keyframe, which the software decoder does about
+    7x faster than VideoToolbox, so those files decode in software."""
+    if not has_videotoolbox():
+        return []
+    if source is not None and max_keyframe_gap(Path(source)) > SPARSE_KEYFRAMES:
+        return []
+    return ["-hwaccel", "videotoolbox"]
 
 
 def video_encoder() -> list[str]:
