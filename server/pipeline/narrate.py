@@ -32,13 +32,13 @@ CLIPS_SYSTEM = """You are an expert short-form video editor (TikTok, Reels, Shor
 Each line looks like `[id] mm:ss.s (duration) text`.
 
 Each clip must:
-- Hook within the first sentence: a bold claim, a question, a surprising fact, or tension. You MAY open with a punchy sentence taken from later in the clip's own material as a cold open, then continue from the start.
+- Open cold. The first sentence is all a scroller hears before deciding to swipe, and they have zero context. It must make sense on its own and create curiosity: a bold claim, a surprising number, a question, or a problem the viewer has. It must not lean on anything before it, so never open with "so if this…", "and then…", "that's why…", "these numbers…", "as I said…", or a pronoun whose referent the viewer hasn't heard yet. If the clip's strongest line comes later (often the conclusion, the diagnosis, or the result), put it first as a cold open, then play the build-up. The `hook` field is that first sentence, verbatim.
 - Make complete sense to someone who has not seen the rest of the recording. There should be no dangling references like "as I said before".
 - End on a payoff: the answer, the result, or the punchline. Don't let it trail off.
 - Contain no retakes, false starts, or meta-talk. Skip those sentences even inside an otherwise contiguous run.
 - Run within the target duration. Sum the durations of the sentences you pick.
 
-Prefer contiguous runs of sentences. Rank clips best first, and score each 1-10 for how likely it is to perform. Return fewer clips rather than weak ones."""
+Prefer contiguous runs of sentences. Rank clips best first, and score each 1-10 for how likely it is to perform. Judge the opening harshly: a clip whose first sentence needs earlier context scores 5 at most. Return fewer clips rather than weak ones."""
 
 
 CONTENT = {

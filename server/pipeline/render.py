@@ -73,7 +73,7 @@ def _video_args(source: Path, analysis: Path, info: dict, s: float, e: float, ve
 
 
 def _piece(source: Path, s: float, e: float, out: Path, fps: Fraction, decode: list[str],
-           vf: str | None, caption_track: Path | None, size: tuple[int, int], preview: bool) -> None:
+           vf: str | None, caption_track: Path | None, size: tuple[int, int], encoder: str) -> None:
     d = e - s
     inputs = [*decode, "-ss", f"{s:.6f}", "-t", f"{d:.6f}", "-i", str(source)]
     if caption_track:
@@ -86,7 +86,7 @@ def _piece(source: Path, s: float, e: float, out: Path, fps: Fraction, decode: l
     run([
         "ffmpeg", "-y", *inputs, *video,
         "-af", f"afade=t=in:d={FADE},afade=t=out:st={max(0.0, d - FADE):.6f}:d={FADE}",
-        *video_encoder(preview),
+        *video_encoder(encoder),
         "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2",
         "-t", f"{d:.6f}", "-video_track_timescale", timescale(fps),
         str(out),
@@ -116,13 +116,14 @@ def render(source: Path, ranges: list[list[float]], out: Path, vertical: bool = 
     # Mixing GPU- and CPU-processed pieces could give the joined file inconsistent stream
     # parameters, so the GPU-only path is used only when no piece needs CPU filters.
     gpu_ok = not punch_in and not caption_words
-    preview = max_height is not None
+    # Vertical clips are the deliverable; 16:9 renders are previews unless exported.
+    encoder = "clip" if vertical else ("preview" if max_height is not None else "master")
 
     tmp = Path(tempfile.mkdtemp(prefix="autoedit-"))
     try:
         pieces = [tmp / f"p{n:05d}.mov" for n in range(len(snapped))]
         # CPU-encoded previews scale with cores; the hardware encoder runs one job at a time anyway.
-        with ThreadPoolExecutor(max_workers=6 if preview else 2) as pool:
+        with ThreadPoolExecutor(max_workers=2 if encoder == "master" else 6) as pool:
             def one(n: int) -> None:
                 (s, e), out_piece = snapped[n], pieces[n]
                 work = tmp / f"w{n:05d}"
@@ -130,7 +131,7 @@ def render(source: Path, ranges: list[list[float]], out: Path, vertical: bool = 
                 decode, vf = _video_args(source, analysis_source or source, info, s, e, vertical, size,
                                          face_track, zooms[n], gpu_ok, work)
                 track = cap.track(caption_words, s, e, *size, work) if caption_words else None
-                _piece(source, s, e, out_piece, fps, decode, vf, track, size, preview)
+                _piece(source, s, e, out_piece, fps, decode, vf, track, size, encoder)
 
             list(pool.map(one, range(len(snapped))))
         listing = tmp / "list.txt"

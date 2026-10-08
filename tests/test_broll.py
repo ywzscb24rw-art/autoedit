@@ -114,3 +114,13 @@ def test_talking_head_preset_closes_short_pauses():
     talking = edl.build_ranges(words, [0, 1], 10.0, edl.params_for({"opts": {"content": "talking"}}))
     assert len(screen) == 1  # kept whole
     assert len(talking) == 2 and talking[1][0] - talking[0][1] > 0.2  # breath removed
+
+
+def test_clips_drop_leading_connectives():
+    words = W(("So,", 0.0, 0.2), ("and", 0.25, 0.4), ("one", 0.5, 0.7), ("metric", 0.75, 1.0), ("so", 1.1, 1.2), ("matters.", 1.25, 1.6))
+    t = {"words": words, "segments": [{"id": 0, "words": [0, 6]}], "duration": 5.0}
+    edits = {"mode": "clips", "clips": [{"segment_ids": [0]}]}
+    order = edl._plan_inputs(t, edits)["clip_0"]
+    assert order == [2, 3, 4, 5]  # only the leading "So, and" go; the later "so" stays
+    restored = {**edits, "overrides": {"0": True}}
+    assert edl._plan_inputs(t, restored)["clip_0"][0] == 0  # a hand-restored word is kept

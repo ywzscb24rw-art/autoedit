@@ -218,14 +218,33 @@ def total(ranges: list[list[float]]) -> float:
     return round(sum(e - s for s, e in ranges), 3)
 
 
+# Words that make a clip sound like it starts mid-thought ("So another metric...", "And then...").
+# Only pure discourse markers: dropping "because", "like" or "right" ("right now") changes meaning.
+CONNECTIVES = {"so", "and", "but", "now", "okay", "ok", "alright", "well", "anyway", "anyways", "also", "yeah", "plus"}
+
+
+def strip_leading_connectives(words: list[dict], order: list[int], edits: dict, clip: int) -> list[int]:
+    """Drop connectives from the start of a clip, unless the user restored one by hand."""
+    overrides = edits.get("overrides", {})
+    k = 0
+    while k < len(order) - 1 and _norm(words[order[k]]["w"]) in CONNECTIVES and not overrides.get(str(order[k])):
+        k += 1
+    return order[k:]
+
+
+def _norm(w: str) -> str:
+    return "".join(ch for ch in w.lower() if ch.isalnum())
+
+
 def _plan_inputs(transcript: dict, edits: dict) -> dict[str, list[int]]:
     """Output name -> ordered kept word indices."""
     cut = word_cut_reasons(transcript, edits)
     if edits.get("mode") == "clips":
         # Within a clip, the LLM's segment choice is the only segment-level cut.
         clip_cut = {i: r for i, r in cut.items() if r != "ai"}
+        words = transcript["words"]
         return {
-            f"clip_{n}": ordered_kept_words(transcript, c["segment_ids"], clip_cut)
+            f"clip_{n}": strip_leading_connectives(words, ordered_kept_words(transcript, c["segment_ids"], clip_cut), edits, n)
             for n, c in enumerate(edits.get("clips", []))
         }
     order = edits.get("order") or [s["id"] for s in transcript["segments"]]

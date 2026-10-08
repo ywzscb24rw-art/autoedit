@@ -68,14 +68,19 @@ def hw_decode(source: Path | None = None) -> list[str]:
     return ["-hwaccel", "videotoolbox"]
 
 
-def video_encoder(preview: bool = False) -> list[str]:
-    """H.264 encoder options.
+def video_encoder(kind: str = "master") -> list[str]:
+    """H.264 encoder options by purpose.
 
-    Previews use x264 "ultrafast" on the CPU: the Mac's hardware encoder is quick for one
-    stream but runs parallel jobs one at a time, while x264 renders four pieces at once about
-    4x faster overall. Everything else uses the hardware encoder (libx264 off-Mac)."""
-    if preview:
+    preview: x264 ultrafast. The Mac's hardware encoder is quick for one stream but runs
+      parallel jobs one at a time; x264 renders several pieces at once ~4x faster overall.
+    clip: x264 veryfast, for the 9:16 clips that get posted. Same speed (decoding the source
+      dominates), same quality (SSIM 0.9939 vs 0.9940), about 1/3 the file size.
+    master: the hardware encoder (libx264 off-Mac), for conversions, proxies and exports.
+    """
+    if kind == "preview":
         return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "22", "-pix_fmt", "yuv420p"]
+    if kind == "clip":
+        return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p"]
     if has_videotoolbox():
         return ["-c:v", "h264_videotoolbox", "-q:v", "65"]
     return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
