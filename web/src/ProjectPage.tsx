@@ -70,9 +70,9 @@ export default function ProjectPage({ id }: { id: string }) {
 
   const src = current ? media(id, current.file, renderedAt) : data.has_source ? media(id, 'source.mp4') : null
   const original = state.media?.duration
-  // Previews of footage taller than 1080p render at 1080p; full resolution is an explicit export.
+  // 16:9 previews render at 720p (PREVIEW_HEIGHT in render.py); full resolution is an explicit export.
   const fullHeight = state.media?.height ?? 0
-  const canExport = !!current && fullHeight > 1080 && !(clip && edits?.opts.vertical)
+  const canExport = !!current && fullHeight > 720 && !(clip && edits?.opts.vertical)
   const fullLabel = fullHeight >= 2160 ? '4K' : `${fullHeight}p`
 
   return (
@@ -120,7 +120,7 @@ export default function ProjectPage({ id }: { id: string }) {
             <p className="muted stats">
               {fmt(original)} → <strong>{fmt(current.duration)}</strong>
               {current.name === 'main' && <> ({Math.round((1 - current.duration / original) * 100)}% shorter, {current.cuts} pieces)</>}
-              {' · '}<a href={media(id, current.file, renderedAt)} download>Download{canExport ? ' 1080p preview' : ''}</a>
+              {' · '}<a href={media(id, current.file, renderedAt)} download>Download{canExport ? ' 720p preview' : ''}</a>
               {canExport && (current.export_file
                 ? <>{' · '}<a href={media(id, current.export_file, renderedAt)} download>Download {fullLabel}</a></>
                 : <>{' · '}<button className="link" onClick={() => exportFull(current.name)} disabled={running}>Export {fullLabel}</button></>)}

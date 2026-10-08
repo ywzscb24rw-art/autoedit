@@ -17,7 +17,7 @@ from . import reframe
 from .ingest import hw_decode, probe, run, video_encoder
 
 FADE = 0.01  # 10 ms audio fades hide the click at each cut
-PREVIEW_HEIGHT = 1080  # previews of 4K footage render about 3x faster at 1080p
+PREVIEW_HEIGHT = 720  # 16:9 previews render at 720p; full resolution is an explicit export
 PUNCH_LEVELS = (1.0, 1.15)  # alternate framings at jump cuts in talking-head edits
 PUNCH_MIN_PIECE = 0.8  # pieces shorter than this keep the previous framing (no flicker)
 
